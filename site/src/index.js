@@ -6,6 +6,7 @@
 
 import { accounts } from './accounts.js';
 import { trackGoal, withAgentLens } from './agentlens/index.ts';
+import { releaseInfo } from './releases.js';
 
 import { hostsOnline } from './introducer.js';
 
@@ -358,8 +359,17 @@ async function recordDownload(env, request, kind, file, event, ctx) {
     )
       .bind(Date.now(), kind, file, request.cf?.country ?? null, clip(request.headers.get('user-agent'), 200), visitor, via, previous)
       .run();
-    const os = /darwin/.test(file) ? 'macos' : /linux/.test(file) ? 'linux' : undefined;
-    await goal(env, request, ctx, visitor, via === 'update' ? 'update' : event, { file, os, via: via ?? 'unknown', previous });
+    if (kind !== 'release') {
+      await goal(env, request, ctx, visitor, event, { file });
+      return;
+    }
+    // A quick-support session fetches the release too; that session is already counted once, as quick_support.
+    if (request.headers.get('x-glass-via') === 'quick-support') return;
+    // One event per thing that happened: a fresh install, an update (from → to), or a download by hand.
+    const { version, os, arch, format } = await releaseInfo(env, new URL(request.url), file);
+    if (via === 'install') await goal(env, request, ctx, visitor, 'install', { version, os, arch });
+    else if (via === 'update') await goal(env, request, ctx, visitor, 'update', { version, from: previous, upgrade: `${previous} → ${version}`, os, arch });
+    else await goal(env, request, ctx, visitor, 'download', { version, os, arch, format });
   } catch (e) {
     console.error('recordDownload failed', e);
   }

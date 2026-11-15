@@ -5,6 +5,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { releaseInfo } from '../../site/src/releases.js';
 
 const SITE = resolve(import.meta.dirname, '../../site');
 // (Another port when something is already on this one: it would answer in this Worker's place.)
@@ -292,4 +293,17 @@ test('host connections that never sign in are only kept so long', { timeout: 30_
   assert.equal(await closed, 4008);
   assert.equal(others.at(-1).readyState, WebSocket.OPEN);
   for (const ws of others) ws.close();
+});
+
+test('release events know what was served: latest resolves to version.json', async () => {
+  const env = { ASSETS: { fetch: async () => new Response('{"version":"0.15.0"}') } };
+  const at = new URL('https://glassdesk.dev/releases/x');
+  assert.deepEqual(await releaseInfo(env, at, 'glass-latest-darwin-universal.tar.gz'), { version: '0.15.0', os: 'macos', arch: 'universal', format: 'tar.gz' });
+  assert.deepEqual(await releaseInfo(env, at, 'glass-0.13.1-windows-arm64.msi'), { version: '0.13.1', os: 'windows', arch: 'arm64', format: 'msi' });
+  assert.equal((await releaseInfo(env, at, 'notes.txt')).version, 'unknown');
+});
+
+test('quick support marks its release fetch, so a session is not also counted as a download', async () => {
+  assert.match(await (await get('/help.sh')).text(), /X-Glass-Via: quick-support/);
+  assert.match(await (await get('/help.ps1')).text(), /'X-Glass-Via' = 'quick-support'/);
 });
