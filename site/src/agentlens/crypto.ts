@@ -50,12 +50,29 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return diff === 0;
 }
 
+const hex = (b: ArrayBuffer, n: number) => [...new Uint8Array(b).slice(0, n)].map((x) => x.toString(16).padStart(2, "0")).join("");
+
+/** IPv6 counts by its /64 (one home or office): devices rotate the rest of the address. */
+export function network(ip: string): string {
+  if (!ip.includes(":")) return ip;
+  const [head = "", tail] = ip.split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const groups = tail === undefined ? h : [...h, ...Array<string>(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t];
+  return groups.slice(0, 4).map((g) => g.toLowerCase().padStart(4, "0")).join(":") + "::/64";
+}
+
 /**
- * Cookieless visitor id (Plausible-style): rotates daily, unlinkable across days and sites,
- * not reversible without the secret.
+ * Cookieless visitor id (Plausible-style): rotates daily, unlinkable across days and sites, not reversible without
+ * the secret. Shaped "<visitor>.<network>": the visitor part is one browser or client (IP + user agent) on one day; the network part
+ * is everyone on that IP (or IPv6 /64) that day, so a page view in a browser can be linked to a `curl … | sh`
+ * install from the same place. Both rotate daily and can't be reversed without the secret.
  */
 export async function visitorId(secret: string, host: string, ip: string, ua: string, now = Date.now()): Promise<string> {
   const day = new Date(now).toISOString().slice(0, 10);
-  const digest = await crypto.subtle.digest("SHA-256", enc.encode(`${day}|${secret}|${host}|${ip}|${ua}`));
-  return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const [v, net] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(`${day}|${secret}|${host}|${ip}|${ua}`)),
+    crypto.subtle.digest("SHA-256", enc.encode(`${day}|${secret}|${host}|net|${network(ip)}`)),
+  ]);
+  return `${hex(v, 8)}.${hex(net, 4)}`;
 }

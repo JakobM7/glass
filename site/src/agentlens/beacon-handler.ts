@@ -29,6 +29,11 @@ interface BeaconBody {
   tc?: number;
   ut?: number;
   st?: number;
+  sd?: number;
+  lcp?: number;
+  inp?: number;
+  cls?: number;
+  ttfb?: number;
 }
 
 const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : 0);
@@ -107,6 +112,15 @@ export async function handleBeacon(req: Request, env: AgentLensEnv, ctx: Executi
         bytes: -1,
         is_entry: kind === "pv" && (external || !refHost) ? 1 : 0,
         viewport: Math.max(0, Math.min(10000, Math.round(num(b.w)))),
+        ...(kind === "engage"
+          ? {
+              scroll: Math.max(0, Math.min(100, Math.round(num(b.sd)))),
+              lcp: Math.max(0, Math.min(120_000, Math.round(num(b.lcp)))),
+              inp: Math.max(0, Math.min(60_000, Math.round(num(b.inp)))),
+              layout_shift: Math.max(0, Math.min(100_000, Math.round(num(b.cls)))),
+              ttfb: Math.max(0, Math.min(120_000, Math.round(num(b.ttfb)))),
+            }
+          : {}),
       }))().catch(logErr("record_beacon_failed")),
   );
   return new Response(null, { status: 204 });
