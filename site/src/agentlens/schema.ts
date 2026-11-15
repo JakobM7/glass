@@ -39,6 +39,11 @@ export const DOUBLES = [
   "viewport", // double11 window width reported by the beacon
   "lat", // double12 city-level latitude from Cloudflare, 1 decimal (~11 km); 0 = unknown
   "lon", // double13 city-level longitude, 1 decimal
+  "lcp", // double14 Largest Contentful Paint, ms (engage rows; 0 = not measured)
+  "inp", // double15 Interaction to Next Paint, ms
+  "layout_shift", // double16 Cumulative Layout Shift × 1000
+  "ttfb", // double17 Time to First Byte, ms
+  "scroll", // double18 deepest scroll on the page, % of its height
 ] as const;
 
 export type BlobName = (typeof BLOBS)[number];
