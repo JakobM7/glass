@@ -20,7 +20,7 @@ before(async () => {
   run(['d1', 'migrations', 'apply', 'getglass', '--local']);
   wrangler = spawn(
     'npx',
-    ['wrangler', 'dev', '--port', String(PORT), '--persist-to', persist, '--var', `STATS_KEY:${KEY}`, '--var', 'VISITOR_SALT:test'],
+    ['wrangler', 'dev', '--port', String(PORT), '--persist-to', persist, '--var', `STATS_KEY:${KEY}`, '--var', 'VISITOR_SALT:test', '--var', 'AL_SECRET:test-agentlens'],
     { cwd: SITE, stdio: 'ignore', detached: true },
   );
   for (let i = 0; i < 120; i++) {
@@ -63,6 +63,28 @@ test('the remote-access client is served at /app/, where its relative URLs resol
   const bare = await get('/app');
   assert.equal(bare.status, 301);
   assert.equal(new URL(bare.headers.get('location')).pathname, '/app/');
+});
+
+const BROWSER = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36';
+const browse = (path) => fetch(`${BASE}${path}`, { headers: { 'user-agent': BROWSER, 'accept-language': 'en', 'sec-fetch-mode': 'navigate' } });
+
+test('analytics: pages carry the AgentLens beacon; scripts, the viewer and signaling are untouched', async () => {
+  for (const path of ['/', '/docs', '/features']) {
+    const html = await (await browse(path)).text();
+    assert.match(html, /<script data-t="[^"]+">\(\(\)=>/, `${path} has the beacon`);
+    assert.doesNotMatch(html, /googletagmanager/, `${path} has no Google tag`);
+  }
+  assert.match(await (await get('/', 'curl/8.7.1')).text(), /^#!\/bin\/sh/);
+  assert.doesNotMatch(await (await browse('/app/')).text(), /data-t=/);
+  const online = await fetch(`${BASE}/signal/online?ids=`);
+  assert.deepEqual(await online.json(), { online: {} });
+});
+
+test('analytics: the beacon endpoint takes signed page tokens only', async () => {
+  const token = /data-t="([^"]+)"/.exec(await (await browse('/docs')).text())[1];
+  const post = (t) => fetch(`${BASE}/_al/e`, { method: 'POST', headers: { 'user-agent': BROWSER }, body: JSON.stringify({ t, k: 'pv', p: '/docs', r: '', u: '', s: [] }) });
+  assert.equal((await post(token)).status, 204);
+  assert.equal((await post('x.1.y')).status, 403);
 });
 
 test('videos answer byte ranges (Safari and link-card players need them)', async () => {
