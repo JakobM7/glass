@@ -4,6 +4,8 @@ What changed in each release of Glass. `glass update` (or the Glass app) install
 
 ## Unreleased
 
+- Machines always shows On this network; when nothing is found it says what a computer needs to appear there.
+
 ## 0.15.3
 
 November 16, 2026
