@@ -4,13 +4,12 @@ What changed in each release of Glass. `glass update` (or the Glass app) install
 
 ## Unreleased
 
-- Machines always shows On this network; when nothing is found it says what a computer needs to appear there.
-
 ## 0.15.3
 
 November 16, 2026
 
 - **The Glass app's access-token field can be clicked and typed into.** When a computer asked for its token, the screen area behind the field took every click and keystroke, so nothing could be entered. The field now has the keyboard as soon as it appears, and the keys go to the other computer only once its screen is showing.
+- **Machines always shows On this network.** With nothing found the section was hidden, so it looked as if it wasn't there; it now says what a computer needs to appear (Glass 0.15.2 or newer, the same network, no VPN in the way).
 - The same prompt says how to use your passkey instead: update Glass on that computer and press Let your passkey open this computer on its Home page.
 
 ## 0.15.2
