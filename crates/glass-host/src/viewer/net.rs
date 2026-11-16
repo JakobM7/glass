@@ -32,6 +32,9 @@ pub struct Target {
     pub link: Option<String>,
     /// Remote access (`…/app/#r=key`): the introducer's address and the host's public key.
     pub remote: Option<(String, String)>,
+    /// Where it is, for a computer found on this network (`nearby`): `dns` names it (and
+    /// is what its certificate and this app's memory of it go by), this reaches it.
+    pub at: Option<std::net::IpAddr>,
 }
 
 impl Target {
@@ -51,7 +54,7 @@ impl Target {
         let dns = if authority.contains(':') || base.starts_with("http://") { format!("{}://{authority}", if base.starts_with("http://") { "http" } else { "https" }) } else { authority.to_string() };
         if let Some(key) = param("r") {
             let origin = base.split_once("://").map_or(format!("https://{authority}"), |(scheme, _)| format!("{scheme}://{authority}"));
-            return Some(Self { name: "Remote computer".into(), dns: format!("remote:{}", &key[..key.len().min(12)]), is_self: false, token: param("t"), link: param("l"), remote: Some((origin, key)) });
+            return Some(Self { name: "Remote computer".into(), dns: format!("remote:{}", &key[..key.len().min(12)]), is_self: false, token: param("t"), link: param("l"), remote: Some((origin, key)), at: None });
         }
         Some(Self {
             // A name's first label ("mac"), or an address as it is.
@@ -61,6 +64,7 @@ impl Target {
             token: param("t"),
             link: param("l"),
             remote: None,
+            at: None,
         })
     }
 }
@@ -181,12 +185,12 @@ fn web_base(dns: &str) -> (Vec<String>, String) {
 
 /// What the host's web server tells browsers: where WebTransport listens, and the hash of
 /// its certificate when that's self-signed.
-async fn host_config(dns: &str) -> Result<HostConfig> {
-    let (bases, _) = web_base(dns);
+async fn host_config(dns: &str, at: Option<std::net::IpAddr>) -> Result<HostConfig> {
+    let (bases, host) = web_base(dns);
     let v: Value = tokio::task::spawn_blocking(move || -> Result<Value> {
         // Generous: some hosts are slow to answer (older Windows hosts take seconds).
         let config = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(12))).build();
-        let agent: ureq::Agent = match pinned_address() {
+        let agent: ureq::Agent = match at.map(|ip| (host, ip)).or_else(pinned_address) {
             Some((name, ip)) => ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::new(), Pinned(name, ip)),
             None => config.new_agent(),
         };
@@ -271,7 +275,7 @@ async fn once(target: &Target, viewer: &Arc<Viewer>, rx: &mut mpsc::UnboundedRec
         // Remote access: through glassdesk.dev, then peer to peer.
         Some((base, key)) => Conn::Rtc(Arc::new(super::rtc::RtcConn::connect(base, key).await?)),
         None => {
-            let cfg = host_config(&target.dns).await.context("Glass isn't answering there")?;
+            let cfg = host_config(&target.dns, target.at).await.context("Glass isn't answering there")?;
             step(&format!("config: wt port {}, pinned cert {}", cfg.wt_port, cfg.cert_hash.is_some()));
             let builder = ClientConfig::builder().with_bind_default();
             let config = match cfg.cert_hash {
@@ -282,11 +286,13 @@ async fn once(target: &Target, viewer: &Arc<Viewer>, rx: &mut mpsc::UnboundedRec
             .max_idle_timeout(Some(Duration::from_secs(10)))?
             .build();
             let mut config = config;
-            if let Some((name, ip)) = pinned_address() {
+            let host = web_base(&target.dns).1;
+            // A computer found on this network: by the name it gave, at the address it was heard from.
+            let found = target.at.map(|ip| (cfg.wt_host.clone().unwrap_or_else(|| host.clone()), ip));
+            if let Some((name, ip)) = found.or_else(pinned_address) {
                 config.set_dns_resolver(Pinned(name, ip));
             }
             let endpoint = Endpoint::client(config)?;
-            let host = web_base(&target.dns).1;
             let url = format!("https://{}:{}/", cfg.wt_host.as_deref().unwrap_or(&host), cfg.wt_port);
             step(&format!("connecting to {url}"));
             let conn = tokio::time::timeout(Duration::from_secs(8), endpoint.connect(&url)).await.context("timed out")??;
@@ -299,13 +305,15 @@ async fn once(target: &Target, viewer: &Arc<Viewer>, rx: &mut mpsc::UnboundedRec
     let (mut send, recv) = conn.open_bi().await?;
     step("control stream open");
     let own = || std::fs::read_to_string(crate::default_token_file()).ok().map(|t| t.trim().to_string());
-    let token = target.token.clone().or_else(|| if target.is_self { own() } else { None });
+    let token = target.token.clone().or_else(|| if target.is_self { own() } else { super::prefs::load(&target.dns).token });
     // A link works once: after that, the pass it was traded for.
     let pass = viewer.pass.lock().unwrap().clone().or_else(|| super::prefs::pass(&target.dns));
     let link = if pass.is_some() { None } else { target.link.clone() };
     let device = format!("Glass app on {}", crate::support::computer_name());
     // `cursor`: this Mac's own pointer is the pointer (no delay, none drawn into the video).
-    let hello = json!({ "t": "hello", "token": token, "device": device, "codecs": codecs(), "cursor": cfg!(target_os = "macos"), "acks": true, "ua": if cfg!(windows) { "Glass app (Windows)" } else { "Glass app (macOS)" }, "link": link, "pass": pass });
+    let hello = json!({ "t": "hello", "token": token, "device": device, "codecs": codecs(), "cursor": cfg!(target_os = "macos"), "acks": true, "ua": if cfg!(windows) { "Glass app (Windows)" } else { "Glass app (macOS)" }, "link": link, "pass": pass,
+        // Nothing to show: on the same network, the person at that computer can let this one in.
+        "ask": token.is_none() && link.is_none() && pass.is_none() && target.remote.is_none() });
     write_json(&mut send, &hello).await?;
     step("hello sent");
     let mut control = read_control(recv);
@@ -348,6 +356,10 @@ async fn once(target: &Target, viewer: &Arc<Viewer>, rx: &mut mpsc::UnboundedRec
                 match msg["t"].as_str().unwrap_or_default() {
                     "welcome" | "layout" => {
                         if msg["t"] == "welcome" {
+                            // A token typed for this computer got in: remembered, as a browser does.
+                            if let Some(t) = target.token.as_ref().filter(|_| !target.is_self) {
+                                super::prefs::update(&target.dns, |m| m.token = Some(t.clone()));
+                            }
                             let repair = msg["features"]["nack"].as_bool().unwrap_or(false);
                             for p in &mut pipes {
                                 p.asm.reset(Instant::now());
@@ -407,9 +419,16 @@ async fn once(target: &Target, viewer: &Arc<Viewer>, rx: &mut mpsc::UnboundedRec
                     "waiting" => viewer.set_status(Status::Connecting(msg["msg"].as_str().unwrap_or("Waiting for someone at the computer to let you in…").into())),
                     "denied" => return Ok(End::Refused(msg["msg"].as_str().unwrap_or("Not let in.").into())),
                     "error" if msg["msg"] == "unauthorized" => {
-                        // A pass that stopped working (revoked, expired) isn't offered again.
-                        super::prefs::update(&target.dns, |m| m.pass = None);
-                        return Ok(End::Refused(format!("{} didn't let this Mac in. Sign in to Tailscale as the same person, or open it in the browser with a link.", target.name)));
+                        // A pass or token that stopped working (revoked, expired, reset) isn't offered again.
+                        super::prefs::update(&target.dns, |m| (m.pass, m.token) = (None, None));
+                        viewer.needs_token.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return Ok(End::Refused(if token.is_some() {
+                            format!("{} didn't take that access token.", target.name)
+                        } else if target.remote.is_some() {
+                            format!("{} needs its own sign-in the first time.", target.name)
+                        } else {
+                            format!("{} didn't let this computer in. Connect from the same network and allow it there, sign in to Tailscale as the same person on both, or open a link from it.", target.name)
+                        }));
                     }
                     "error" => tracing::warn!("viewer: host error: {}", msg["msg"]),
                     _ => {}

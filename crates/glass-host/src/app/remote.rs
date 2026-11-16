@@ -25,6 +25,10 @@ use crate::viewer::{Session, Status, Stream, Target, keys};
 pub struct Disconnect;
 impl EventEmitter<Disconnect> for RemoteView {}
 
+/// Asks the window to connect again, with the computer's access token this time.
+pub struct WithToken(pub String);
+impl EventEmitter<WithToken> for RemoteView {}
+
 /// A chat line.
 struct Line {
     from: String,
@@ -101,6 +105,8 @@ pub struct RemoteView {
     chat_open: bool,
     unread: usize,
     chat_input: Entity<InputState>,
+    /// The computer's access token, when it turned this one away without one.
+    token_input: Entity<InputState>,
     now_playing: Option<Value>,
     sharp: bool,
     privacy: bool,
@@ -143,6 +149,17 @@ pub struct RemoteView {
 }
 
 impl RemoteView {
+    fn send_token(&mut self, cx: &mut Context<Self>) {
+        let token = self.token_input.read(cx).value().trim().to_string();
+        if !token.is_empty() {
+            cx.emit(WithToken(token));
+        }
+    }
+
+    pub fn target(&self) -> &Target {
+        &self.session.target
+    }
+
     pub fn new(target: Target, rt: &tokio::runtime::Handle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let prefs = crate::viewer::prefs::load(&target.dns);
         let session = Session::start(rt, target);
@@ -208,7 +225,13 @@ impl RemoteView {
         });
         let focus = cx.focus_handle();
         let chat_input = cx.new(|cx| InputState::new(window, cx).placeholder("Message everyone on this computer…"));
+        let token_input = cx.new(|cx| InputState::new(window, cx).placeholder("Its access token").masked(true));
         let subs = vec![
+            cx.subscribe_in(&token_input, window, |this, _, ev: &FieldEvent, _, cx| {
+                if let FieldEvent::PressEnter { .. } = ev {
+                    this.send_token(cx);
+                }
+            }),
             cx.subscribe(&volume, |this, _, ev: &SliderEvent, cx| {
                 let (SliderEvent::Change(v) | SliderEvent::Release(v)) = ev;
                 let level = (v.start() / 100.).clamp(0.0, 1.0);
@@ -253,6 +276,7 @@ impl RemoteView {
             chat_open: false,
             unread: 0,
             chat_input,
+            token_input,
             now_playing: None,
             sharp: false,
             privacy: false,
@@ -1605,6 +1629,8 @@ impl Render for RemoteView {
                 Status::Connecting(m) => (m.clone(), gpui_kit::white().opacity(0.8)),
                 Status::Live => unreachable!(),
             };
+            // Turned away with nothing to show: the computer's own token gets in, once.
+            let ask_token = matches!(status, Status::Refused(_)) && self.session.viewer.needs_token.load(Ordering::Relaxed);
             area = area.child(
                 v_flex()
                     .absolute()
@@ -1613,7 +1639,25 @@ impl Render for RemoteView {
                     .justify_center()
                     .gap_2()
                     .p_8()
-                    .child(div().max_w(super::text_size::pt(460.)).text_center().text_sm().text_color(color).child(text)),
+                    .child(div().max_w(super::text_size::pt(460.)).text_center().text_sm().text_color(color).child(text))
+                    .when(ask_token, |d| {
+                        d.child(
+                            div()
+                                .max_w(super::text_size::pt(460.))
+                                .text_center()
+                                .text_xs()
+                                .text_color(gpui_kit::white().opacity(0.7))
+                                .child(format!("Paste its access token: on {}, Glass › Settings › Access token (or run: glass token). This computer remembers it.", self.session.target.name)),
+                        )
+                        .child(
+                            h_flex()
+                                .pt_2()
+                                .gap_2()
+                                .w(super::text_size::pt(380.))
+                                .child(div().flex_1().child(gpui_kit::component::input::Input::new(&self.token_input).small()))
+                                .child(Button::new("token-connect").small().primary().label("Connect").on_click(cx.listener(|this, _, _, cx| this.send_token(cx)))),
+                        )
+                    }),
             );
         }
 

@@ -4,6 +4,28 @@ What changed in each release of Glass. `glass update` (or the Glass app) install
 
 ## Unreleased
 
+### Computers on the same network
+
+- **Glass finds the other computers on your network by itself: no Tailscale, no address to type.** A host announces itself the way a printer does (mDNS, `_glass._tcp`), and the Glass app lists what it hears under Machines → On this network. `glass nearby` lists them in a terminal.
+- Being found isn't being let in. The first time you connect, the person at that computer sees which device is asking and allows it (the prompt on screen, the Glass app, or `glass allow`); the device then keeps its own pass for 30 days, like one a link gives, listed under Links to revoke. Only a device on the same subnet can ask; a "no" keeps that address from asking again for ten minutes, and one device asks at a time. Your tailnet devices, the token and links work as before.
+- `glass config nearby off` (or Settings → Found on this network) stops both the announcing and the asking. Turning guest links off by policy stops the asking too.
+- Connecting from the browser to a computer that isn't on your tailnet still takes a link: browsers need HTTPS, which a bare network address doesn't have.
+
+### Your account, in the Glass app
+
+- **Sign the Glass app in to your glassdesk.dev account and it lists your account's computers, to open from anywhere in the app's own viewer.** Press Sign in with a passkey (Home, Machines or Settings): your browser opens, where your passkey is, and you say yes. Machines → On your account then shows each computer and whether it's online. In a terminal: `glass account sign-in`, `glass account list`, `glass account sign-out`.
+- The app's sign-in can only read that list: no details, no actions, no changes to the account. The website shows which apps are signed in, to sign any of them out.
+- As from the website, opening a computer still takes that computer's own sign-in. From the app, the first time, it asks for the computer's access token and remembers it; a token that stops working is forgotten and asked for again.
+
+### The Glass app
+
+- **Home starts with your computers.** Sign in to your glassdesk.dev account, or add this computer to it in one click: Glass makes the one-time link and opens it, and you sign in there with a passkey (Reach from anywhere goes on if it was off). Once the app is signed in, it knows whether this computer is on the account already. Next to it: the command that sets Glass up on another computer, to copy; the computers found on this network, to connect to; Machines; and a link for someone else.
+- Settings is in order: Who can connect (with the access token and your account, to add or remove this computer), While someone's connected, Video and recording, AI agents, Notifications, Appearance (text size and the viewer's name and colour), Network, and Glass (version, service, logs, feedback, turning it off). Nothing was removed.
+
+### Fixes
+
+- A host with a Tailscale certificate starts again: the certificate check added after 0.15.0 only read keys in PKCS#8 form, and `tailscale cert` writes them in SEC1.
+
 ## 0.15.1
 
 November 16, 2026

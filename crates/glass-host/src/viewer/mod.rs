@@ -178,6 +178,8 @@ pub struct Viewer {
     viewport: Mutex<Option<Value>>,
     /// A guest pass (from a link), for reconnecting.
     pass: Mutex<Option<String>>,
+    /// The computer turned this one away for lack of a credential: its access token would do.
+    pub needs_token: AtomicBool,
     changed: Notify,
     /// A change is waiting to be drawn (so a burst of frames wakes the window once).
     dirty: AtomicBool,
@@ -203,6 +205,7 @@ impl Viewer {
             video_on: AtomicBool::new(true),
             viewport: Mutex::new(None),
             pass: Mutex::new(None),
+            needs_token: AtomicBool::new(false),
             changed: Notify::new(),
             dirty: AtomicBool::new(false),
             last_tick: Mutex::new(None),
@@ -389,7 +392,7 @@ impl Session {
 /// arrived: the native pipeline end to end (QUIC, reassembly, hardware decode, input).
 pub async fn probe(target: &str, token: Option<String>, secs: u64, send_input: bool, save: Option<std::path::PathBuf>, sharp: bool, click: Option<(f32, f32)>, typed: Option<String>, controls: Vec<String>) -> anyhow::Result<()> {
     let session = Session::start(&tokio::runtime::Handle::current(), {
-        let mut t = Target::from_url(target).unwrap_or(Target { name: target.into(), dns: target.into(), is_self: false, token: None, link: None, remote: None });
+        let mut t = Target::from_url(target).unwrap_or(Target { name: target.into(), dns: target.into(), is_self: false, token: None, link: None, remote: None, at: None });
         t.token = token.or(t.token);
         t
     });

@@ -50,6 +50,10 @@ pub enum ClientMsg {
         /// from the start, not from its reports. See `rate::AckRate`.
         #[serde(default)]
         acks: bool,
+        /// Nothing to show (no token, link or pass): ask the person at the computer. Only
+        /// from the same network. See `crate::nearby`.
+        #[serde(default)]
+        ask: bool,
     },
     /// The viewer now draws the pointer itself, or (trackpad mode, which has its own) wants
     /// it back in the video.

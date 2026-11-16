@@ -30,6 +30,31 @@ pub fn set_remote(on: bool) -> Result<String> {
     })
 }
 
+/// Adds this computer to a glassdesk.dev account: makes the one-time link and opens it, where
+/// signing in (or making an account) is a passkey. Accounts open computers over remote access,
+/// so that goes on too.
+pub fn account_add() -> Result<String> {
+    if !remote::enabled() {
+        remote::set_enabled(true)?;
+        crate::support::owner_chose_remote();
+    }
+    let claim = crate::account::add()?;
+    open(&claim.url);
+    Ok(format!("Opened glassdesk.dev in your browser: sign in with your passkey there to add {}.", claim.name))
+}
+
+pub fn account_remove() -> Result<String> {
+    Ok(match crate::account::remove()? {
+        0 => "This computer wasn't on any account.".into(),
+        _ => "Removed from your account. It no longer shows at glassdesk.dev/computers.".into(),
+    })
+}
+
+/// Where your account lists your computers.
+pub fn computers_url() -> String {
+    format!("{}/computers", remote::base().trim_end_matches('/'))
+}
+
 pub fn privacy(on: bool) -> Result<String> {
     ipc::call(&ipc::Request::Privacy { on })?;
     Ok(if on { "This screen is blanked while you're viewed." } else { "Privacy screen off." }.into())

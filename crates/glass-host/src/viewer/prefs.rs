@@ -17,6 +17,9 @@ pub struct MachinePrefs {
     /// A guest pass a link was traded for (and when it runs out, unix seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass: Option<(String, u64)>,
+    /// Its access token, typed here once (as a browser remembers it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 fn path() -> std::path::PathBuf {

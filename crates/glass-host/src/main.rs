@@ -37,6 +37,7 @@ mod mcp;
 mod oauth;
 mod media;
 mod mic;
+mod nearby;
 mod notify;
 mod now_playing;
 mod opus_audio;
@@ -292,9 +293,11 @@ enum Command {
         action: String,
     },
     /// Your computers at glassdesk.dev: add this one to the account you're signed in to
-    /// there (a one-time link), or remove it from every account.
+    /// there (a one-time link), or remove it from every account. `sign-in` signs this
+    /// computer's Glass in to the account (through your browser, where your passkey is), `list`
+    /// shows the account's computers, `sign-out` forgets it.
     Account {
-        #[arg(value_parser = ["add", "remove"])]
+        #[arg(value_parser = ["add", "remove", "sign-in", "list", "sign-out"])]
         action: String,
         #[arg(long)]
         json: bool,
@@ -455,6 +458,8 @@ enum Command {
     },
     /// Wake a machine with Wake-on-LAN, by a MAC address or a tailnet name seen before.
     Wake { target: String },
+    /// List the Glass computers on this network (glass config nearby off hides this one).
+    Nearby,
     /// Show the access token for devices outside your tailnet.
     Token {
         /// Replace it with a new one; devices using the old token must sign in again.
@@ -746,6 +751,44 @@ fn remote_cli(action: &str) -> Result<()> {
 }
 
 fn account_cli(action: &str, json: bool) -> Result<()> {
+    match action {
+        "sign-in" => {
+            let login = account::sign_in()?;
+            if json {
+                println!("{}", serde_json::json!({ "url": login.url, "expires": login.expires }));
+            } else {
+                println!("Open this where you're signed in to glassdesk.dev/computers (or sign in there with your passkey) and say yes:\n\n{}\n{}\n\nWaiting…", setup::qr(&login.url), login.url);
+            }
+            while !login.poll()? {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            if !json {
+                println!("Signed in. See your computers with: glass account list");
+            }
+            return Ok(());
+        }
+        "list" => {
+            let Some(list) = account::computers()? else { anyhow::bail!("Not signed in. Sign in with: glass account sign-in") };
+            if json {
+                let list: Vec<_> = list.iter().map(|c| serde_json::json!({ "id": c.id, "key": c.key, "name": c.name, "online": c.online })).collect();
+                println!("{}", serde_json::json!({ "computers": list }));
+            } else if list.is_empty() {
+                println!("No computers on your account yet. Add this one with: glass account add");
+            } else {
+                let base = remote::base();
+                for c in list {
+                    println!("{}  {}  {}/app/#r={}", c.name, if c.online { "online" } else { "offline" }, base.trim_end_matches('/'), c.key);
+                }
+            }
+            return Ok(());
+        }
+        "sign-out" => {
+            account::sign_out();
+            println!("Signed out.");
+            return Ok(());
+        }
+        _ => {}
+    }
     if action == "remove" {
         let n = account::remove()?;
         if json {
@@ -1177,6 +1220,19 @@ async fn async_main(args: Args) -> Result<()> {
         Some(Command::Privacy { state }) => {
             ipc::call(&ipc::Request::Privacy { on: state == "on" })?;
             println!("Privacy mode {state} (until everyone disconnects).");
+            Ok(())
+        }
+        Some(Command::Nearby) => {
+            nearby::listen();
+            // Answers come within a second or so of asking.
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let found = nearby::found();
+            if found.is_empty() {
+                println!("No other Glass computers on this network.");
+            }
+            for f in found {
+                println!("{}  {}  {}  ({})", f.name, f.os, f.url, f.at);
+            }
             Ok(())
         }
         Some(Command::Wake { target }) => {
