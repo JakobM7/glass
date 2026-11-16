@@ -233,6 +233,14 @@ pub struct Store {
     pub snap: Snapshot,
     pub tailnet: Tailnet,
     pub machines: Vec<Machine>,
+    /// Glass computers heard on this network (`nearby`).
+    pub nearby: Vec<crate::nearby::Found>,
+    /// The computers on the glassdesk.dev account this app is signed in to (`None`: signed out).
+    pub account: Option<Vec<crate::account::Computer>>,
+    /// Waiting for the browser to say yes to a sign-in (which try, so a new one replaces it).
+    pub signing_in: Option<u64>,
+    /// This computer's key, to tell it apart in the account's list.
+    pub own_key: Option<String>,
     /// The newest release, once checked.
     pub latest: Option<String>,
     /// Asking glassdesk.dev for the newest release right now.
@@ -245,17 +253,32 @@ pub struct Store {
 }
 
 const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(30 * 60);
+/// How often the account's computers (and who's online) are read again.
+const ACCOUNT_EVERY: Duration = Duration::from_secs(30);
+/// How often a sign-in asks whether the browser said yes.
+const SIGN_IN_POLL: Duration = Duration::from_secs(2);
 
 struct StoreHandle(Entity<Store>);
 impl Global for StoreHandle {}
 
 impl Store {
     fn new(rt: tokio::runtime::Handle, cx: &mut Context<Self>) -> Self {
+        crate::nearby::listen();
         // Quick state, every second.
         cx.spawn(async move |this, cx| {
             loop {
                 let snap = cx.background_executor().spawn(async { data::gather() }).await;
-                let Ok(()) = this.update(cx, |s, cx| s.set(snap, cx)) else { break };
+                let Ok(()) = this.update(cx, |s, cx| {
+                    s.set(snap, cx);
+                    // Only what changed draws again.
+                    let nearby = crate::nearby::found();
+                    if s.nearby != nearby {
+                        s.nearby = nearby;
+                        cx.notify();
+                    }
+                }) else {
+                    break;
+                };
                 cx.background_executor().timer(TICK).await;
             }
         })
@@ -279,6 +302,18 @@ impl Store {
             }
         })
         .detach();
+        // The account's computers, while signed in.
+        cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(signed_in) = this.read_with(cx, |s, _| s.account.is_some()) else { break };
+                if signed_in {
+                    let list = cx.background_executor().spawn(async { crate::account::computers() }).await;
+                    let Ok(()) = this.update(cx, |s, cx| s.set_account(list, cx)) else { break };
+                }
+                cx.background_executor().timer(ACCOUNT_EVERY).await;
+            }
+        })
+        .detach();
         // Updates: now, then every half hour (the window can stay open for days).
         cx.spawn(async move |this, cx| {
             loop {
@@ -291,6 +326,10 @@ impl Store {
             snap: Snapshot::default(),
             tailnet: Tailnet::Checking,
             machines: Vec::new(),
+            nearby: Vec::new(),
+            account: crate::account::signed_in().then(Vec::new),
+            signing_in: None,
+            own_key: crate::account::own_key(),
             latest: None,
             checking: false,
             updating: false,
@@ -326,6 +365,124 @@ impl Store {
             self.loaded = true;
             cx.notify();
         }
+    }
+
+    /// The computers heard on this network that aren't on the tailnet too (those are
+    /// listed there already, and know this one).
+    pub fn nearby_only(&self) -> Vec<crate::nearby::Found> {
+        self.nearby
+            .iter()
+            .filter(|f| !self.machines.iter().any(|m| f.url == format!("https://{}", m.dns) || f.url.starts_with(&format!("https://{}:", m.dns))))
+            .cloned()
+            .collect()
+    }
+
+    /// What the website answered: its list, signed out (`None`), or nothing new (unreachable).
+    fn set_account(&mut self, list: anyhow::Result<Option<Vec<crate::account::Computer>>>, cx: &mut Context<Self>) {
+        if let Ok(list) = list
+            && self.account != list
+        {
+            self.account = list;
+            cx.notify();
+        }
+    }
+
+    /// The account's other computers: not this one, and not one heard on this network
+    /// (that's listed there, and reached directly).
+    pub fn account_others(&self) -> Vec<crate::account::Computer> {
+        let nearby: Vec<String> = self.nearby.iter().map(|f| f.id.clone()).collect();
+        self.account
+            .iter()
+            .flatten()
+            .filter(|c| Some(&c.key) != self.own_key.as_ref() && !nearby.contains(&crate::nearby::id_for(&c.key)))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether this computer is on the account this app is signed in to (`None`: signed out).
+    pub fn on_account(&self) -> Option<bool> {
+        let list = self.account.as_ref()?;
+        Some(list.iter().any(|c| Some(&c.key) == self.own_key.as_ref()))
+    }
+
+    /// Signs this app in to your glassdesk.dev account: opens the page in the browser, where
+    /// your passkey is, and waits for the yes. Pressed again, it opens a fresh link.
+    pub fn account_sign_in(window: &mut Window, cx: &mut App) {
+        let store = cx.global::<StoreHandle>().0.clone();
+        let attempt = store.update(cx, |s, cx| {
+            let n = s.signing_in.map_or(1, |n| n + 1);
+            s.signing_in = Some(n);
+            cx.notify();
+            n
+        });
+        window
+            .spawn(cx, async move |cx| {
+                let bg = cx.background_executor().clone();
+                let result: anyhow::Result<Option<Vec<crate::account::Computer>>> = async {
+                    let login = std::sync::Arc::new(bg.spawn(async { crate::account::sign_in() }).await?);
+                    actions::open(&login.url);
+                    loop {
+                        bg.timer(SIGN_IN_POLL).await;
+                        // Replaced by a newer try (or signed in some other way): this one stops quietly.
+                        if store.read_with(cx, |s, _| s.signing_in != Some(attempt)) {
+                            return Ok(None);
+                        }
+                        let l = login.clone();
+                        if bg.spawn(async move { l.poll() }).await? {
+                            break;
+                        }
+                    }
+                    bg.spawn(async { crate::account::computers() }).await
+                }
+                .await;
+                let _ = cx.update(|window, cx| {
+                    let mine = store.update(cx, |s, cx| {
+                        let mine = s.signing_in == Some(attempt);
+                        if mine {
+                            s.signing_in = None;
+                            if let Ok(Some(list)) = &result {
+                                s.account = Some(list.clone());
+                            }
+                            cx.notify();
+                        }
+                        mine
+                    });
+                    if mine {
+                        toast(window, cx, result.map(|list| match list {
+                            Some(list) => format!("Signed in. {} on your account.", match list.len() { 1 => "1 computer".into(), n => format!("{n} computers") }),
+                            None => String::new(),
+                        }));
+                    }
+                });
+            })
+            .detach();
+    }
+
+    /// Signs this app out of the account (this computer stays on it, if it was).
+    pub fn account_sign_out(window: &mut Window, cx: &mut App) {
+        let store = cx.global::<StoreHandle>().0.clone();
+        store.update(cx, |s, cx| {
+            s.account = None;
+            s.signing_in = None;
+            cx.notify();
+        });
+        act(window, cx, || {
+            crate::account::sign_out();
+            Ok("Signed out. This app no longer lists your account's computers.".into())
+        });
+    }
+
+    /// Reads the account's computers again right away (after adding or removing this one).
+    pub fn refresh_account(cx: &mut App) {
+        let store = cx.global::<StoreHandle>().0.clone();
+        if store.read(cx).account.is_none() {
+            return;
+        }
+        cx.spawn(async move |cx| {
+            let list = cx.background_executor().spawn(async { crate::account::computers() }).await;
+            let _ = store.update(cx, |s, cx| s.set_account(list, cx));
+        })
+        .detach();
     }
 
     pub fn update_available(&self) -> Option<&str> {
@@ -441,7 +598,7 @@ pub struct GlassApp {
     page: Page,
     /// Another computer's screen, shown in place of the pages.
     #[cfg(any(target_os = "macos", windows))]
-    remotes: Vec<(Entity<remote::RemoteView>, Subscription)>,
+    remotes: Vec<(Entity<remote::RemoteView>, Vec<Subscription>)>,
     /// Which of them is on screen (none: a page is).
     #[cfg(any(target_os = "macos", windows))]
     showing: Option<usize>,
@@ -585,7 +742,14 @@ impl GlassApp {
             this.remotes.retain(|(v, _)| v != view);
             this.show_remote(None, window, cx);
         });
-        self.remotes.push((view, sub));
+        // Turned away, then given the computer's token: the same computer again, with it.
+        let again = cx.subscribe_in(&view, window, |this, view, token: &remote::WithToken, window, cx| {
+            let mut target = view.read(cx).target().clone();
+            target.token = Some(token.0.clone());
+            this.remotes.retain(|(v, _)| v != view);
+            this.connect(target, window, cx);
+        });
+        self.remotes.push((view, vec![sub, again]));
         self.show_remote(Some(self.remotes.len() - 1), window, cx);
     }
 

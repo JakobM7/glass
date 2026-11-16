@@ -27,8 +27,14 @@ const CLAIM_CLOCK_MS = 5 * 60_000;
 const CLAIMS_PER_HOUR = 20;
 const COMPUTERS_PER_ACCOUNT = 32;
 const NAME_MAX = 64;
+// The Glass app signs in through a browser that's signed in: the app opens a link, the
+// browser says yes, the app collects a token. That token only lists computers.
+const APP_LOGIN_MS = 10 * 60_000;
+const APP_LOGINS_PER_HOUR = 20;
+const APP_SESSION_MS = 90 * 86400_000;
+const APPS_PER_ACCOUNT = 32;
 
-/** Routes under /api/account and /api/claims; `null` for anything else. */
+/** Routes under /api/account, /api/claims and /api/app; `null` for anything else. */
 export async function accounts(request, env, url) {
   const path = url.pathname;
   const { method } = request;
@@ -42,6 +48,19 @@ export async function accounts(request, env, url) {
       if (e instanceof Refused) return json({ error: e.message }, e.status);
       throw e;
     }
+  }
+  // From the Glass app: no cookie, its own token.
+  if (path.startsWith('/api/app/')) {
+    try {
+      if (path === '/api/app/logins' && method === 'POST') return await appLogin(request, env, url);
+      if (path === '/api/app/token' && method === 'POST') return await appToken(request, env);
+      if (path === '/api/app/computers' && method === 'GET') return await appComputers(request, env);
+      if (path === '/api/app/session' && method === 'DELETE') return await appSignOut(request, env);
+    } catch (e) {
+      if (e instanceof Refused) return json({ error: e.message, ...e.extra }, e.status);
+      throw e;
+    }
+    return json({ error: 'not found' }, 404);
   }
   if (path !== '/api/account' && !path.startsWith('/api/account/')) return null;
   // Changes only from this site's own pages (the cookie is SameSite=Strict too).
@@ -58,6 +77,11 @@ export async function accounts(request, env, url) {
     if (path === '/api/account/policy' && method === 'PUT') return await putPolicy(request, env);
     if (path === '/api/account/computers' && method === 'GET') return await computers(request, env);
     if (path === '/api/account/computers' && method === 'POST') return await addComputer(request, env);
+    if (path === '/api/account/app' && method === 'GET') return await peekAppLogin(env, url);
+    if (path === '/api/account/app' && method === 'POST') return await approveAppLogin(request, env);
+    if (path === '/api/account/apps' && method === 'GET') return await apps(request, env);
+    const app = path.match(/^\/api\/account\/apps\/([A-Za-z0-9_-]{43})$/);
+    if (app && method === 'DELETE') return await removeApp(request, env, app[1]);
     const remove = path.match(/^\/api\/account\/computers\/([A-Za-z0-9_-]{22})$/);
     if (remove && method === 'DELETE') return await removeComputer(request, env, remove[1]);
     const relay = path.match(/^\/api\/account\/computers\/([A-Za-z0-9_-]{22})\/(action|manage)$/);
@@ -185,7 +209,7 @@ async function deleteAccount(request, env) {
   const s = await session(request, env);
   if (!s) throw new Refused('Not signed in.', 401);
   // Its open challenges too: one left over would make a new account with the same id.
-  await env.DB.batch(['passkeys', 'sessions', 'account_computers', 'account_policy', 'account_challenges'].map((t) => env.DB.prepare(`DELETE FROM ${t} WHERE account = ?`).bind(s.account)).concat(
+  await env.DB.batch(['passkeys', 'sessions', 'account_computers', 'account_policy', 'account_challenges', 'app_sessions', 'app_logins'].map((t) => env.DB.prepare(`DELETE FROM ${t} WHERE account = ?`).bind(s.account)).concat(
     env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(s.account),
     dropOrphanReports(env),
   ));
@@ -305,6 +329,121 @@ async function computers(request, env) {
       ...(r.data && { report: { ...JSON.parse(r.data), at: r.reported } }),
     })),
   });
+}
+
+const cleanName = (name) => String(name ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, NAME_MAX);
+
+/**
+ * The Glass app wants to sign in. It keeps a secret and sends only the secret's hash, which
+ * goes in the link it opens: whoever sees the link can't collect the token.
+ */
+async function appLogin(request, env, url) {
+  const { code, name } = await body(request);
+  const clean = cleanName(name);
+  if (!clean || !/^[A-Za-z0-9_-]{43}$/.test(String(code))) throw new Refused('expected code and name');
+  const now = Date.now();
+  const visitor = await visitorId(request, env);
+  const recent = await env.DB.prepare('SELECT COUNT(*) AS n FROM app_logins WHERE visitor = ? AND created > ?').bind(visitor, now - 3600_000).first('n');
+  if (recent >= APP_LOGINS_PER_HOUR) throw new Refused('Too many tries. Try again later.', 429);
+  await env.DB.prepare('DELETE FROM app_logins WHERE expires < ?').bind(now).run();
+  const res = await env.DB.prepare('INSERT OR IGNORE INTO app_logins (code_hash, name, created, expires, visitor) VALUES (?, ?, ?, ?, ?)')
+    .bind(await sha256b64(`app:${code}`), clean, now, now + APP_LOGIN_MS, visitor)
+    .run();
+  if (!res.meta.changes) throw new Refused('That code was used already.', 409);
+  return json({ url: `${url.origin}/computers#app=${code}`, expires: Math.floor((now + APP_LOGIN_MS) / 1000) });
+}
+
+/** The link's code for an app's secret (the app works it out the same way). */
+async function appCode(secret) {
+  return sha256b64(`glass-app-login-v1\n${secret}`);
+}
+
+/** The app asks whether its sign-in was approved: its token, once. */
+async function appToken(request, env) {
+  const { secret } = await body(request);
+  if (!/^[A-Za-z0-9_-]{43}$/.test(String(secret))) throw new Refused('expected secret');
+  const hash = await sha256b64(`app:${await appCode(secret)}`);
+  const now = Date.now();
+  const row = await env.DB.prepare('SELECT account FROM app_logins WHERE code_hash = ? AND expires > ?').bind(hash, now).first();
+  if (!row) throw new Refused('That took too long. Sign in again.', 404);
+  if (!row.account) return json({ pending: true }, 202);
+  const taken = await env.DB.prepare('DELETE FROM app_logins WHERE code_hash = ? AND account IS NOT NULL RETURNING account, name').bind(hash).first();
+  if (!taken) throw new Refused('That took too long. Sign in again.', 404);
+  const token = randomB64(32);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM app_sessions WHERE account = ? AND expires < ?').bind(taken.account, now),
+    env.DB.prepare('INSERT INTO app_sessions (token_hash, account, name, created, used, expires) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind(await sha256b64(token), taken.account, taken.name, now, now, now + APP_SESSION_MS),
+  ]);
+  return json({ token, expires: Math.floor((now + APP_SESSION_MS) / 1000) });
+}
+
+/** The account a Glass app's token is for: `{ account, hash }` or null. Never a browser's session. */
+async function appSession(request, env) {
+  const token = (request.headers.get('authorization') ?? '').match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
+  if (!token) return null;
+  const hash = await sha256b64(token);
+  const now = Date.now();
+  const row = await env.DB.prepare('SELECT account, used FROM app_sessions WHERE token_hash = ? AND expires > ?').bind(hash, now).first();
+  if (!row) return null;
+  // Used apps stay signed in; the write is at most hourly.
+  if (now - (row.used ?? 0) > 3600_000) {
+    await env.DB.prepare('UPDATE app_sessions SET used = ?, expires = ? WHERE token_hash = ?').bind(now, now + APP_SESSION_MS, hash).run();
+  }
+  return { account: row.account, hash };
+}
+
+/** What the app lists: names, keys and who's online. No details, no policy, no actions. */
+async function appComputers(request, env) {
+  const s = await appSession(request, env);
+  if (!s) throw new Refused('Not signed in.', 401);
+  const { results } = await env.DB.prepare('SELECT host_id, host_key, name FROM account_computers WHERE account = ? ORDER BY name COLLATE NOCASE').bind(s.account).all();
+  const online = await hostsOnline(env, results.map((r) => r.host_id));
+  return json({ computers: results.map((r) => ({ id: r.host_id, key: r.host_key, name: r.name, online: Boolean(online[r.host_id]) })) });
+}
+
+async function appSignOut(request, env) {
+  const s = await appSession(request, env);
+  if (s) await env.DB.prepare('DELETE FROM app_sessions WHERE token_hash = ?').bind(s.hash).run();
+  return json({ ok: true });
+}
+
+/** Which app a sign-in link is for, so the page can ask first. */
+async function peekAppLogin(env, url) {
+  const row = await env.DB.prepare('SELECT name FROM app_logins WHERE code_hash = ? AND expires > ? AND account IS NULL')
+    .bind(await sha256b64(`app:${url.searchParams.get('code') ?? ''}`), Date.now())
+    .first();
+  if (!row) throw new Refused('This link has expired or was used already. Press Sign in again in the Glass app.', 404);
+  return json({ name: row.name });
+}
+
+async function approveAppLogin(request, env) {
+  const s = await session(request, env);
+  if (!s) throw new Refused('Sign in first.', 401);
+  const { code } = await body(request);
+  const now = Date.now();
+  const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM app_sessions WHERE account = ? AND expires > ?').bind(s.account, now).first('n');
+  if (n >= APPS_PER_ACCOUNT) throw new Refused('This account has as many apps signed in as it can hold. Sign one out below first.');
+  const row = await env.DB.prepare('UPDATE app_logins SET account = ? WHERE code_hash = ? AND expires > ? AND account IS NULL RETURNING name')
+    .bind(s.account, await sha256b64(`app:${code}`), now)
+    .first();
+  if (!row) throw new Refused('This link has expired or was used already. Press Sign in again in the Glass app.', 404);
+  return json({ name: row.name });
+}
+
+/** The Glass apps signed in to this account. */
+async function apps(request, env) {
+  const s = await session(request, env);
+  if (!s) throw new Refused('Sign in first.', 401);
+  const { results } = await env.DB.prepare('SELECT token_hash, name, created, used FROM app_sessions WHERE account = ? AND expires > ? ORDER BY created DESC').bind(s.account, Date.now()).all();
+  return json({ apps: results.map((r) => ({ id: r.token_hash, name: r.name, created: r.created, used: r.used })) });
+}
+
+async function removeApp(request, env, id) {
+  const s = await session(request, env);
+  if (!s) throw new Refused('Sign in first.', 401);
+  await env.DB.prepare('DELETE FROM app_sessions WHERE account = ? AND token_hash = ?').bind(s.account, id).run();
+  return json({ ok: true });
 }
 
 const POLICY = { filevault: false, firewall: false, glass_current: false, disk_free_gb: 0, fresh_hours: 0, os_min: '' };

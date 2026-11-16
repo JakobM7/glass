@@ -72,13 +72,13 @@ Running the same command again updates Glass in place (it says which version it 
 
 Open **Glass** from Applications or Spotlight, or choose **Open Glass…** from the menu bar icon. On Windows, open **Glass** from the Start menu or the tray icon. It does everything the `glass` command does, in a window:
 
-- **Home:** whether Glass is ready, the address to open with a QR code to scan, anything that needs fixing (a permission, Tailscale), and the switches used most.
+- **Home:** whether Glass is ready, the address to open with a QR code to scan, anything that needs fixing (a permission, Tailscale), then **Your computers**: sign the app in to your glassdesk.dev account with a passkey (so Machines lists your account's computers), add this one to it (one click: it makes the one-time link and opens it), the command that sets Glass up on another computer, the computers found on this network to connect to, and a link for someone else. Below that, the switches used most.
 - **Connected:** who's viewing (end any session), connection requests to allow or deny, the chat with viewers (both sides, and reply), the privacy screen.
 - **Links:** one-time links with limits, shown as a QR code, and the devices they let in, to revoke.
-- **Machines:** your computers on Tailscale, to open or wake.
+- **Machines:** your computers on Tailscale, on the same network and on your glassdesk.dev account, to open or wake.
 - **History:** every session and refused attempt.
 - **AI agents:** add Glass to Claude Code, Claude Desktop or Cursor in one click; pause or stop an agent; answer its questions.
-- **Settings:** every `glass config` setting, the access token, restarting or turning off the service, updates and feedback.
+- **Settings:** who can connect (asking first, the tailnet, this network, from anywhere, the access token, your account), what the computer does while someone's connected, video and recording, AI agents, notifications, appearance, network, and Glass itself (updates, the service, logs, feedback, turning it off).
 - **Teams & SSO:** single sign-on, access rules, LDAP, SCIM and device posture.
 
 The first time it opens, it walks through setup. It's a separate process from the background service, drawn on the GPU (with [GPUI](https://www.gpui.rs)), and quits when you close its window; Glass keeps running in the background.
@@ -183,11 +183,15 @@ The skill drives two commands you can also use in your own scripts:
 
 Devices that aren't on your tailnet, or belong to another tailnet user, are asked for the access token (`glass token` shows it; `glass token --set` lets you choose one). A link containing `#t=<token>` signs a browser in once and is then remembered.
 
+**On the same network (no Tailscale).** Glass computers announce themselves on the local network (mDNS, like a printer), and the Glass app lists them under **Machines → On this network**; `glass nearby` lists them in a terminal. Being found isn't being let in: the first time you connect, the person at that computer sees which device is asking and allows it (on screen, in the Glass app, or with `glass allow`). That device then has its own pass for 30 days, as if it had opened a link: a guest, listed with the others to revoke. Only devices on the same subnet can ask, one at a time, and a "no" holds for ten minutes. `glass config nearby off` stops the announcing and the asking. This is the Glass app's (macOS and Windows); a browser on the same network still needs a link.
+
 **Magic links.** To let in a device without handing out the token, run `glass link` on the host; it prints the link and a QR code. The link works once, within 15 minutes, and gives that device its own access for 24 hours by default (`glass link --for 7d` to change it). Guests can use the computer but can't switch machines or update Glass. `glass link --revoke` cuts every guest off within seconds and voids unused links; your token and tailnet devices are unaffected. Only fingerprints of links and passes are stored, in `~/.config/glass/access.json`. On your tailnet, the guest's device must be on the tailnet too; for anywhere else, see the next paragraph.
 
 **From anywhere (no Tailscale on the device).** `glass link --anywhere` makes a link like `https://glassdesk.dev/app/#r=…&l=…` that works from any network. The browser and your computer connect directly over WebRTC: UDP, end-to-end encrypted, about as fast as on the tailnet. When a direct path is impossible (some cellular and corporate networks), traffic goes through Cloudflare's TURN relay, still end-to-end encrypted. glassdesk.dev only introduces the two sides; your computer keeps one outgoing connection to it and opens no ports. The link carries your computer's public key and the computer signs every connection answer, so the browser refuses anyone else, glassdesk.dev included. Remote access is off until you make such a link (or run `glass remote on`); `glass remote off` turns it off. One thing to know: in this mode the viewer page itself comes from glassdesk.dev, whereas on your tailnet it comes from your own computer.
 
 **Your computers (glassdesk.dev/computers).** Sign in there with a passkey (no email, no password; it syncs through iCloud Keychain, Google Password Manager or your password manager) to see which of your computers are online and open any of them from any device. To add a computer, run `glass account add` on it (remote access must be on) and open the one-time link, or scan its QR code, where you're signed in. Your computer signs that claim with its key, so nobody can add a computer they don't control. The account only lists computers: opening one still takes that computer's own sign-in, so someone who got into your account would see names and who's online, never a screen. `glass account remove` takes a computer off every account; deleting the account on the page deletes its list. glassdesk.dev keeps the passkey's public key, each computer's name and public key, and a hash of each sign-in cookie. To look after your computers rather than just reach them (their state, actions you can take, rules they should meet), see [Glass Fleet](#glass-fleet-new).
+
+**Your account in the Glass app.** The app on a Mac or Windows PC can sign in to the same account: press **Sign in with a passkey** (Home, Machines or Settings), or run `glass account sign-in`. Your browser opens at glassdesk.dev, where your passkey is, and asks whether to sign in the Glass app on that computer; say yes and Machines lists your account's computers under **On your account**, to open in the app's own viewer from anywhere. The app gets a token of its own that can only read that list (names, keys, who's online): it can't see details, run actions, add a passkey or change the account. The page lists the apps that are signed in, with **Sign out** next to each; `glass account sign-out` does it from the computer. Opening a computer still takes that computer's own sign-in: the first time, the app asks for its access token (**Settings › Access token** there, or `glass token`) and remembers it. glassdesk.dev keeps a hash of each app's token and the name of the computer it's on.
 
 ## Help someone (quick support)
 
@@ -474,11 +478,15 @@ glass support            Get help: a code for someone at glassdesk.dev/help (not
 glass privacy on|off     Blank this screen and block local input while viewed
 glass log [-n 20] [--json]   Connection history
 glass wake <name|mac>    Wake a machine with Wake-on-LAN
+glass nearby             Glass computers on this network (glass config nearby off hides this one)
 glass acl [add|remove]   Access rules for SSO and LDAP accounts
 glass config [key [value]]   Settings (no arguments: list them all with descriptions)
 glass remote on|off      Remote access from outside your tailnet (status without an argument)
 glass account add        One-time link (and QR code) that puts this computer on your glassdesk.dev/computers account
 glass account remove     Take this computer off every account
+glass account sign-in    Sign this computer's Glass in to your account (in your browser, with your passkey)
+glass account list       Your account's computers and which are online
+glass account sign-out   Sign it out again
 glass fleet [on|off|status|report]  Tell your account this computer's state; off deletes what was sent
 glass fleet manage [off|status]  Let your account run actions here, each signed by your passkey (off forgets them)
 glass token         Show the access token for devices outside your tailnet
@@ -578,6 +586,7 @@ Hyprland keeps its own Super shortcuts. In fullscreen (Ctrl+Shift+F), Chromium's
 - All traffic is encrypted (TLS 1.3 via QUIC/HTTPS).
 - With Tailscale, traffic stays on your private tailnet and goes directly between devices when possible.
 - Access control: a device is let in if Tailscale reports it belongs to the same user as the Mac, if it presents the access token, or (as a guest) if its Tailscale user is named by an access rule or `tailnet-members` is on. Glass sends nothing to a session (video, audio, clipboard, input) until it is authenticated. Links, single sign-on, LDAP, access rules, posture checks and passkeys can narrow that further; see above.
+- On the local network Glass announces a computer's name, operating system, Glass version, an id made for this, and its tailnet name when it has one, nothing else (`glass config nearby off` stops it). A device there with no token, link or pass gets in only when the person at the computer allows it.
 - Glass runs as your user (a LaunchAgent on macOS, a systemd user service on Linux, a sign-in entry on Windows), never as root. On Windows you can opt into the Glass Secure Desktop service, whose SYSTEM helper only serves your own Glass (see [Windows host](#windows-host-beta)). The one exception you can opt into: **Stay awake with the lid closed** on a Mac installs a sudoers rule that lets it turn sleep off and on (`pmset -a disablesleep 0|1`), nothing else.
 - Keys pressed into a password field, or anywhere while a Linux session is locked, aren't shown to viewers or logged.
 - The file browser is for the computer's owner only (not links or guests), sees only the home folder (no `..`, no symlinks out), and moves to the Trash rather than deleting.

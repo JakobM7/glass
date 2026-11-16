@@ -46,6 +46,7 @@ host saw. On 2026-11-10 all 28 passed on a Mac and on Windows 11 (Arm VM, x64 bu
 | Ctrl+Alt+Delete | More menu (Windows hosts) | `viewer-probe --control '{"t":"sas"}'` against a Windows host with the secure-desktop service: the secure screen came up and Cancel, clicked through the viewer, closed it |
 | Wake-on-LAN | Machines → Wake (from this computer); through a host by its seen addresses | selftest `wake a computer through this one` |
 | Agents' questions | Cards with Allow / Deny / the number | selftest `an agent's question` (through `glass mcp`) |
+| Computers on this network | Machines → On this network (mDNS); the first connection is allowed at that computer, then a pass | live Mac host: `glass nearby`, then `viewer-probe` to its LAN address with `glass allow` / `glass deny` |
 | Guest links, passes | Machines → Open a link; passes kept per computer | test host; live Mac host |
 | Links with a passkey | The app is its own authenticator, unlocked with Touch ID or Windows Hello | live Mac host: Touch ID (Mac) and Windows Hello PIN (VM), registered then verified; an unanswered prompt keeps the session up until the host's own 2-minute limit |
 | Links from anywhere (WebRTC) | Through glassdesk.dev, the answer checked against the link's key | live Mac host |

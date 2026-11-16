@@ -137,6 +137,11 @@ pub async fn run(
 
     crate::origin::start(wt_host.as_deref()).await;
     crate::wol::prefetch_own_macs();
+    // The name the web port's certificate is for: `tailscale cert` names its files by it.
+    let nearby_tls_name = tls.as_ref().map(|t| {
+        wt_host.clone().or_else(|| t.cert.file_stem().and_then(|s| s.to_str()).filter(|s| s.ends_with(".ts.net")).map(str::to_string))
+    });
+    let nearby_listen = listen.clone();
     let version_dir = web_dir.clone();
     let client_config = move || {
         let (wt_host, self_signed) = (wt_host.clone(), self_signed.clone());
@@ -221,6 +226,18 @@ pub async fn run(
         .local_addr()?
         .port();
     let scheme = if tls.is_some() { "https" } else { "http" };
+    // Found by other computers on this network, when it listens there and (over HTTPS) has
+    // a name its certificate is good for.
+    let on_lan = match &nearby_listen {
+        crate::listen::Listen::Default => true,
+        crate::listen::Listen::Explicit(ips) => ips.iter().any(|ip| !ip.is_loopback() && !tailscale::is_tailscale_ip(*ip)),
+    };
+    match nearby_tls_name {
+        _ if !on_lan => {}
+        None => crate::nearby::announce(web_port, None),
+        Some(Some(name)) => crate::nearby::announce(web_port, Some(name)),
+        Some(None) => info!("nearby: not announcing (no name known for the certificate; pass --wt-host)"),
+    }
     if !https_listeners.is_empty() {
         info!(
             "web client at https://<host>/ (port {})",
@@ -816,7 +833,7 @@ async fn control(
         return Ok(());
     }
     let hello_ok = matches!(hello, Ok(Some(ClientMsg::Hello { .. })));
-    let (token, link, pass, hello_device, codecs, ua, hello_cursor, hello_acks) = match hello {
+    let (token, link, pass, hello_device, codecs, ua, hello_cursor, hello_acks, hello_ask) = match hello {
         Ok(Some(ClientMsg::Hello {
             token,
             link,
@@ -826,8 +843,9 @@ async fn control(
             ua,
             cursor,
             acks,
-        })) => (token, link, pass, device, codecs, ua, cursor, acks),
-        _ => (None, None, None, None, Vec::new(), None, false, false),
+            ask,
+        })) => (token, link, pass, device, codecs, ua, cursor, acks, ask),
+        _ => (None, None, None, None, Vec::new(), None, false, false, false),
     };
     let mut device = crate::viewers::clean_device(hello_device.as_deref());
     let remote = ctx.relayed.is_some();
@@ -939,6 +957,57 @@ async fn control(
             }
             Ok(None) => link_failed = true,
             Err(e) => warn!("{peer}: magic link check failed: {e:#}"),
+        }
+    }
+    // A device on the same network with nothing to show, asking: the person here decides, and
+    // a yes gives it a pass, like opening a link would. (Not at the sign-in screen, where
+    // nobody is; not over WebRTC, where the address is public; not when guests are off.)
+    let mut asked_nearby = false;
+    if auth.is_none()
+        && hello_ask
+        && token.is_none()
+        && link.is_none()
+        && pass.is_none()
+        && ctx.relayed.is_none()
+        && !crate::signin::active()
+        && !tailnet_pending
+        && policy.allows("links")
+    {
+        match crate::nearby::may_ask(peer) {
+            Ok(asking) => {
+                let msg = "Waiting for the person at this computer to let you in…".into();
+                control::write_json(&mut send, &ServerMsg::Waiting { msg }).await?;
+                let answer = crate::approval::ask(format!("{device} · on this network ({peer})")).await;
+                drop(asking);
+                let granted = match answer {
+                    crate::approval::Answer::Allowed => {
+                        crate::access::grant_pass(&access_file, crate::nearby::GRANT, crate::access::Scope::default(), &device)
+                            .map_err(|e| warn!("{peer}: couldn't make a pass: {e:#}"))
+                            .ok()
+                    }
+                    _ => None,
+                };
+                let Some(g) = granted else {
+                    if answer == crate::approval::Answer::Denied {
+                        crate::nearby::denied(peer);
+                    }
+                    record_auth_failure(shared, peer);
+                    refused(&device, "not allowed (asked from this network)");
+                    let msg = match answer {
+                        crate::approval::Answer::Unanswered => "Nobody at this computer answered. Try again when someone's there.",
+                        _ => "The person at this computer didn't let you in.",
+                    }
+                    .into();
+                    control::write_json(&mut send, &ServerMsg::Denied { msg, ended: false }).await?;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    ctx.conn.close(1u32.into(), b"not allowed");
+                    return Ok(());
+                };
+                info!("{peer}: let in from this network by the person here");
+                asked_nearby = true;
+                auth = Some(Auth::Guest { pass: g.pass, expires: g.expires, new: true, scope: g.scope, passkey: None });
+            }
+            Err(why) => info!("{peer}: asked to be let in, but {why}"),
         }
     }
     let Some(auth) = auth else {
@@ -1074,7 +1143,8 @@ async fn control(
     let settings = crate::settings::load();
     let scope_asks = matches!(&auth, Auth::Guest { scope, .. } | Auth::TailnetGuest { scope, .. } if scope.ask);
     // (Nobody is at the sign-in screen to ask.)
-    if !signin && (settings.ask_everyone || (asked && (settings.ask_guests || scope_asks))) {
+    // (Someone just let in from this network was asked about a moment ago.)
+    if !signin && !asked_nearby && (settings.ask_everyone || (asked && (settings.ask_guests || scope_asks))) {
         let msg = "Waiting for the person at this computer to let you in…".into();
         control::write_json(&mut send, &ServerMsg::Waiting { msg }).await?;
         let mut who = viewer.describe();
@@ -2801,7 +2871,7 @@ fn self_signed_due(issued: std::time::SystemTime, now: std::time::SystemTime) ->
 /// Fails unless the certificate and key belong together, which wtransport takes for
 /// granted (a mismatch panics in its `ServerConfig`).
 fn check_identity(identity: &Identity) -> Result<()> {
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
     let chain: Vec<CertificateDer<'static>> = identity
         .certificate_chain()
         .as_slice()
@@ -2809,7 +2879,8 @@ fn check_identity(identity: &Identity) -> Result<()> {
         .map(|c| CertificateDer::from(c.der().to_vec()))
         .collect();
     anyhow::ensure!(!chain.is_empty(), "no certificate");
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(identity.private_key().secret_der().to_vec()));
+    // Whichever form the file had: `tailscale cert` writes SEC1 ("EC PRIVATE KEY"), ours is PKCS#8.
+    let key = PrivateKeyDer::try_from(identity.private_key().secret_der().to_vec()).map_err(|e| anyhow::anyhow!("the private key: {e}"))?;
     rustls::sign::CertifiedKey::from_der(chain, key, &rustls::crypto::ring::default_provider())
         .context("the certificate and key don't match")?;
     Ok(())

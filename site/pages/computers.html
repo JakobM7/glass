@@ -113,6 +113,10 @@
       <p class="note" id="account-note"></p>
       <div class="actions" id="account-actions"></div>
       <p class="form-status" id="account-status" role="status"></p>
+      <div class="hidden" id="apps">
+        <p class="note">The Glass app is signed in on these computers. It sees this list of computers, nothing more.</p>
+        <ul class="list" id="apps-list"></ul>
+      </div>
     </section>
 
     <section id="browser" aria-labelledby="browser-title">
@@ -316,6 +320,7 @@
         $('account-actions').replaceChildren();
         return;
       }
+      showApps();
       if (!account) {
         $('account-note').textContent = 'Sign in with a passkey to see your computers on every device: it syncs through iCloud Keychain, Google Password Manager or your password manager. No email, no password.';
         $('account-actions').replaceChildren(
@@ -333,6 +338,34 @@
           await api('/api/account', { method: 'DELETE' });
         }, 'quiet'),
       );
+    }
+
+    async function showApps() {
+      const { apps = [] } = account ? await api('/api/account/apps').catch(() => ({})) : {};
+      $('apps').classList.toggle('hidden', !apps.length);
+      $('apps-list').replaceChildren(...apps.map((a) => {
+        const li = document.createElement('li');
+        const who = document.createElement('span');
+        who.className = 'who';
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = a.name;
+        const meta = document.createElement('span');
+        meta.className = 'meta';
+        meta.textContent = `Signed in ${ago(a.created)}`;
+        who.append(name, meta);
+        const out = document.createElement('button');
+        out.type = 'button';
+        out.className = 'manage';
+        out.textContent = 'Sign out';
+        out.addEventListener('click', async () => {
+          out.disabled = true;
+          await api(`/api/account/apps/${a.id}`, { method: 'DELETE' }).catch(() => {});
+          showApps();
+        });
+        li.append(who, out);
+        return li;
+      }));
     }
 
     const ago = (ms) => {
@@ -434,6 +467,53 @@
     }
     const pendingManage = () => { try { return sessionStorage.getItem('glass.manage'); } catch { return null; } };
     const dropManage = () => { try { sessionStorage.removeItem('glass.manage'); } catch {} };
+
+    // A link the Glass app opened (#app=<code>) to sign itself in to this account.
+    function takeAppFromLink() {
+      const v = new URLSearchParams(location.hash.slice(1)).get('app');
+      if (!v) return false;
+      try { sessionStorage.setItem('glass.app', v); } catch {}
+      history.replaceState(null, '', location.pathname);
+      return true;
+    }
+    const pendingApp = () => { try { return sessionStorage.getItem('glass.app'); } catch { return null; } };
+    const dropApp = () => { try { sessionStorage.removeItem('glass.app'); } catch {} };
+    // The app that was just signed in, until the note about it is dismissed.
+    let appDone = null;
+
+    async function showApp(code) {
+      if (appDone) {
+        $('claim-title').textContent = `The Glass app on ${appDone} is signed in`;
+        $('claim-note').textContent = 'Go back to it: your computers are listed there now.';
+        $('claim-actions').replaceChildren(claimButton('OK', async () => { appDone = null; showApps(); }));
+        return;
+      }
+      let name;
+      try {
+        ({ name } = await api(`/api/account/app?code=${encodeURIComponent(code)}`));
+      } catch (e) {
+        $('claim-title').textContent = 'This link doesn\'t work';
+        $('claim-note').textContent = e.message;
+        $('claim-actions').replaceChildren(claimButton('OK', async () => dropApp()));
+        return;
+      }
+      $('claim-title').textContent = `Sign in the Glass app on ${name}?`;
+      if (!account) {
+        $('claim-note').textContent = 'Sign in or create an account below, then say yes here.';
+        $('claim-actions').replaceChildren(claimButton('Not now', async () => dropApp(), 'quiet'));
+        return;
+      }
+      $('claim-note').textContent = 'Only if you pressed Sign in in the Glass app on that computer just now. It will list your computers and whether they\'re online; opening one still takes that computer\'s own sign-in.';
+      $('claim-actions').replaceChildren(
+        claimButton('Sign it in', async () => {
+          await api('/api/account/app', { method: 'POST', body: { code } });
+          dropApp();
+          appDone = name;
+          showAccount();
+        }, 'primary'),
+        claimButton('Not now', async () => dropApp(), 'quiet'),
+      );
+    }
 
     async function enrollManager(hostId, pin) {
       const { account: me } = await api('/api/account');
@@ -572,7 +652,8 @@
     }
     takeClaimFromLink();
     takeManageFromLink();
-    addEventListener('hashchange', () => { if (takeClaimFromLink() || takeManageFromLink()) showClaim(); });
+    takeAppFromLink();
+    addEventListener('hashchange', () => { if (takeClaimFromLink() || takeManageFromLink() || takeAppFromLink()) showClaim(); });
     const pendingClaim = () => { try { return sessionStorage.getItem('glass.claim'); } catch { return null; } };
     const dropClaim = () => { try { sessionStorage.removeItem('glass.claim'); } catch {} };
 
@@ -596,8 +677,10 @@
     async function showClaim() {
       const code = pendingClaim();
       const manage = code ? null : pendingManage();
-      $('claim').classList.toggle('hidden', !code && !manage);
+      const app = code || manage ? null : pendingApp();
+      $('claim').classList.toggle('hidden', !code && !manage && !app && !appDone);
       if (manage) return showManage(manage);
+      if (app || (appDone && !code)) return showApp(app);
       if (!code) return;
       let name;
       try {
@@ -641,13 +724,14 @@
             return;
           }
           dropClaim();
+          dropApp();
         }
         await Promise.all([showClaim(), showMine()]);
       });
       return b;
     }
 
-    const refresh = () => Promise.all([showMine(), showBrowser()]);
+    const refresh = () => Promise.all([showMine(), showBrowser(), showApps()]);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
     setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
     showAccount().then(() => Promise.all([showClaim(), showMine()]));

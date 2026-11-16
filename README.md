@@ -57,7 +57,7 @@ And the viewer is just a web page. No app to install, no account to create.
 - **Apple Pencil.** Pressure and tilt reach the Mac as tablet input, so drawing apps respond as they do to a drawing tablet.
 - **Keyboards per machine.** ⌘↔Ctrl, PC-keyboard and ⌘/⌥ swaps remembered for each computer, and a shortcut bar for touch screens.
 - **Games.** Capture the mouse (relative motion) for games and 3D apps; game controllers reach Linux hosts, and Windows hosts with the free ViGEmBus driver.
-- **Every machine.** All your computers in one menu; wake sleeping ones (Wake-on-LAN), restart Glass or the whole computer and reconnect.
+- **Every machine.** All your computers in one menu, found on Tailscale and on the same network; wake sleeping ones (Wake-on-LAN), restart Glass or the whole computer and reconnect.
 
 ### Between your devices
 - **Your microphone on the computer.** Talk into its apps from your iPad or phone. On a Mac it comes in as Glass Microphone, our own small audio driver (`glass mic install`, one password); on Linux through PipeWire or PulseAudio, nothing to install.
@@ -136,6 +136,9 @@ glass link --revoke [id] # cut off one device, or every device let in by a link
 glass remote off         # turn off access from outside your tailnet
 glass account add        # one-time link that puts this computer on your glassdesk.dev/computers account
 glass account remove     # take this computer off every account
+glass account sign-in    # sign this computer's Glass in to your account (in your browser, with your passkey)
+glass account list       # your account's computers and which are online
+glass account sign-out   # sign it out again
 glass fleet on           # tell your account this computer's state (model, OS, disk, FileVault…); off deletes it
 glass fleet manage       # let your account run actions here (restart, update, scripts), each signed by your passkey
 glass viewers / kick     # who's connected now; end a session
@@ -144,6 +147,7 @@ glass chat "be right there"     # message everyone viewing
 glass privacy on|off     # blank this screen and block local input while viewed
 glass log                # connection history
 glass wake <name|mac>    # Wake-on-LAN
+glass nearby             # Glass computers on this network
 glass config oidc-issuer https://accounts.google.com   # single sign-on (+ oidc-client-id,
                          # oidc-client-secret, oidc-allow ana@x.com,@corp.com, oidc-scope)
 glass config ldap-url ldaps://dir.example.com          # directory sign-in (+ ldap-user-dn
@@ -205,7 +209,7 @@ NSPasteboard, files ◀─▶ control + file streams ◀────────
 - A device gets in only if Tailscale says it's yours, or it has the access token or a one-time pass. Nothing is sent until then.
 - Narrow it further: limited or passkey-bound links, ask-first, single sign-on or LDAP with access rules, SCIM deprovisioning and device posture checks. Secrets are stored owner-only.
 - Remote access from outside your tailnet is off until you make a link or run `glass remote on`.
-- Glass runs as your user, never as root. The app sends nothing to glassdesk.dev except feedback you choose to send, and, if you run `glass account add`, this computer's name and public key for your account's list (and, only if you also run `glass fleet on`, its model, system, memory, disk space, FileVault and firewall state, uptime, battery and Glass version).
+- Glass runs as your user, never as root. The app sends nothing to glassdesk.dev except feedback you choose to send, and, if you sign the app in to your account, this computer's name (shown there as a signed-in app), and, if you run `glass account add`, this computer's name and public key for your account's list (and, only if you also run `glass fleet on`, its model, system, memory, disk space, FileVault and firewall state, uptime, battery and Glass version).
 
 Found a security issue? Please open a [private security advisory](https://github.com/Ntarasiuk/glass/security/advisories/new) rather than a public issue.
 

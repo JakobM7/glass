@@ -40,6 +40,7 @@ Windows shipped in 0.13.0 (beta); a ✅ there means it ran in a Windows 11 Arm V
 | Control elevated windows, UAC prompts | — | — | ✅ SYSTEM helper | Same service; input passes UIPI through SYSTEM |
 | Sign in after a restart (nobody signed in yet) | ❌ | ❌ | ✅ sign-in host | Windows: the same service serves the sign-in screen (screen and input only) until someone signs in, then the user's own host takes over |
 | Send Ctrl+Alt+Del | — | — | ✅ SendSAS | Viewer's More menu. Needs the secure-desktop service (sets the SoftwareSASGeneration policy) |
+| Found on the same network (mDNS) | ✅ | 🧪 | 🧪 | Announcing, and letting a device there ask to connect; listed in the Glass app (macOS, Windows) and by `glass nearby`. Run on a Mac only so far |
 | Wake on LAN, restart Glass/computer | ✅ | ✅ | 🧪 | Windows: restarting Glass works in the VM |
 | Stay awake with the lid closed | ✅ | ✅ | 🧪 power plan lid action | Windows: "Do nothing" on power while it's on, put back after |
 

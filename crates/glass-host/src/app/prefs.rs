@@ -120,14 +120,16 @@ impl GlassApp {
         let store = self.store.read(cx);
         let snap = store.snap.clone();
         let update = store.update_available().map(str::to_string);
+        let signed_in = store.account.is_some();
         let theme = cx.theme().clone();
         let s = &snap.settings;
 
-        let mut connections = vec![
+        // Who gets in, and how: the switches, then the token and your account.
+        let mut who = vec![
             self.toggle("ask-guests", "Ask before guests connect", "Someone with a link waits until you allow them.", s.ask_guests, cx),
             self.toggle("ask-everyone", "Ask before anyone connects", "Your own devices too.", s.ask_everyone, cx),
             self.toggle("tailnet-members", "Let everyone on this tailnet in", "Without the token, as guests. Otherwise only your own devices, and the people your access rules name.", s.tailnet_members, cx),
-            self.toggle("privacy", "Privacy screen while viewed", "Blank this screen and block its keyboard and mouse.", s.privacy, cx),
+            self.toggle("nearby", "Found on this network", "Glass on other computers here lists this one. Connecting still waits until someone here allows it.", !s.nearby_off, cx),
             ui::row(
                 "Reach from anywhere",
                 ui::managed("Links can work outside your tailnet, over WebRTC through glassdesk.dev.", snap.policy.locked("remote")),
@@ -137,6 +139,17 @@ impl GlassApp {
                 }),
                 cx,
             ),
+        ];
+
+        // What this computer does while someone is connected.
+        let lid_detail = if cfg!(windows) {
+            "While plugged in, closing the lid does nothing, so you can keep using it from a viewer."
+        } else {
+            "While on power, so you can still unlock it from a viewer. Asks for your password once."
+        };
+        let connected = vec![
+            self.toggle("privacy", "Privacy screen while viewed", "Blank this screen and block its keyboard and mouse.", s.privacy, cx),
+            self.toggle("lid-awake", "Stay awake with the lid closed", lid_detail, s.lid_awake, cx),
             ui::row(
                 "Microphone from your devices",
                 match &snap.mic {
@@ -156,6 +169,10 @@ impl GlassApp {
                 },
                 cx,
             ),
+        ];
+
+        // For the few who need them.
+        let network = vec![
             self.field("relay", "Your own relay", "A self-hosted server for reaching from anywhere.", cx),
             self.field("forward-ports", "Forwarded ports", "Local web apps your devices may open through Glass.", cx),
             self.field(
@@ -165,12 +182,6 @@ impl GlassApp {
                 cx,
             ),
         ];
-        let lid_detail = if cfg!(windows) {
-            "While plugged in, closing the lid does nothing, so you can keep using it from a viewer."
-        } else {
-            "While on power, so you can still unlock it from a viewer. Asks for your password once."
-        };
-        connections.insert(3, self.toggle("lid-awake", "Stay awake with the lid closed", lid_detail, s.lid_awake, cx));
 
         // The same switches as on AI agents, here too so they're easy to find and turn off.
         let agent = &snap.agent;
@@ -224,14 +235,14 @@ impl GlassApp {
             ),
         ];
 
-        let brand = vec![
+        let look = vec![
             self.field("name", "Name in the viewer", "Instead of this computer's name.", cx),
             self.field("accent", "Accent colour", "The viewer's highlight, like #5cb2ff.", cx),
         ];
 
         let token = snap.token.clone();
         let shown = if self.show_token { token.clone() } else { "•".repeat(token.len().clamp(8, 24)) };
-        let token_rows = vec![
+        who.extend([
             ui::row(
                 "Access token",
                 "Devices outside your tailnet sign in with this.",
@@ -275,7 +286,23 @@ impl GlassApp {
                 }),
                 cx,
             ),
-        ];
+            ui::row(
+                "Your account",
+                "glassdesk.dev lists your computers, to open from any device. You sign in there with a passkey; getting in still takes this computer's own sign-in.",
+                h_flex()
+                    .gap_2()
+                    .child(if signed_in {
+                        Button::new("account-out-s").small().ghost().label("Sign out").on_click(|_, window, cx| Store::account_sign_out(window, cx))
+                    } else {
+                        Button::new("account-in-s").small().ghost().label("Sign in").on_click(|_, window, cx| Store::account_sign_in(window, cx))
+                    })
+                    .child(Button::new("account-remove-s").small().ghost().label("Remove…").on_click(|_, window, cx| {
+                        confirm(window, cx, "Take this computer off your account?", "It stops showing at glassdesk.dev/computers, and the account can no longer manage it. Add it again any time.", "Remove", actions::account_remove)
+                    }))
+                    .child(Button::new("account-add-s").small().label("Add this computer").on_click(|_, window, cx| act(window, cx, actions::account_add))),
+                cx,
+            ),
+        ]);
 
         let service = vec![
             ui::row(
@@ -392,7 +419,7 @@ impl GlassApp {
 
         let size = super::text_size::get();
         let (smallest, largest) = (super::text_size::STEPS[0], *super::text_size::STEPS.last().unwrap_or(&size));
-        let appearance = vec![ui::row(
+        let mut appearance = vec![ui::row(
             "Text size",
             format!("{size:.0} pt. Everything in the window grows with it. {m}+ and {m}− change it too, {m}0 puts it back.", m = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" }),
             h_flex()
@@ -402,17 +429,25 @@ impl GlassApp {
                 .child(Button::new("text-reset").small().ghost().label("Reset").disabled(size == super::text_size::DEFAULT).on_click(|_, _, cx| super::text_size::set(super::text_size::DEFAULT, cx))),
             cx,
         )];
+        appearance.extend(look);
+        // One section for Glass itself: its version first, turning it off last.
+        let mut glass = about;
+        let feedback = glass.pop();
+        glass.extend(service);
+        // Feedback sits with the logs, above turning Glass off.
+        let end = glass.len().saturating_sub(1);
+        glass.splice(end..end, feedback);
 
-        ui::page("Settings", "How Glass behaves, your access token, and the background service.", cx)
-            .child(ui::section("Appearance", appearance, cx))
-            .child(ui::section("Connections", connections, cx))
+        // What people change most first; what few ever touch last.
+        ui::page("Settings", "Who can connect, what this computer does while they are, and Glass itself.", cx)
+            .child(ui::section("Who can connect", who, cx))
+            .child(ui::section("While someone's connected", connected, cx))
+            .child(ui::section("Video and recording", media, cx))
             .child(ui::section("AI agents", agents, cx))
             .child(ui::section("Notifications on your devices", notify, cx))
-            .child(ui::section("Video and recording", media, cx))
-            .child(ui::section("Branding", brand, cx))
-            .child(ui::section("Access token", token_rows, cx))
-            .child(ui::section("Service", service, cx))
-            .child(ui::section("About", about, cx))
+            .child(ui::section("Appearance", appearance, cx))
+            .child(ui::section("Network", network, cx))
+            .child(ui::section("Glass", glass, cx))
     }
 }
 
