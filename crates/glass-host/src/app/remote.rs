@@ -107,6 +107,7 @@ pub struct RemoteView {
     chat_input: Entity<InputState>,
     /// The computer's access token, when it turned this one away without one.
     token_input: Entity<InputState>,
+    token_asked: bool,
     now_playing: Option<Value>,
     sharp: bool,
     privacy: bool,
@@ -277,6 +278,7 @@ impl RemoteView {
             unread: 0,
             chat_input,
             token_input,
+            token_asked: false,
             now_playing: None,
             sharp: false,
             privacy: false,
@@ -376,6 +378,13 @@ impl RemoteView {
         }
         if let Some(url) = self.session.viewer.passkey_url.lock().unwrap().take() {
             super::actions::open(&url);
+        }
+        // The keys go to the other computer once it's live, and not before.
+        self.sync_capture(window, cx);
+        // Turned away for lack of a token: the field is ready to paste into.
+        if !self.token_asked && matches!(self.session.viewer.status(), Status::Refused(_)) && self.session.viewer.needs_token.load(Ordering::Relaxed) {
+            self.token_asked = true;
+            self.token_input.update(cx, |s, cx| s.focus(window, cx));
         }
         if self.over_picture {
             self.cursors.apply(self.session.viewer.cursor());
@@ -554,7 +563,8 @@ impl RemoteView {
 
     /// The keyboard is the other computer's while the picture has focus in the active window.
     fn sync_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let want = self.capture_on && window.is_window_active() && self.focus.is_focused(window);
+        // Only once there's a screen to type into: until then the keys stay here (the token field).
+        let want = self.capture_on && window.is_window_active() && self.focus.is_focused(window) && self.session.viewer.status() == Status::Live;
         if want && self.capture.is_none() {
             let send = self.session.input_sender();
             let this = cx.entity().downgrade();
@@ -1464,6 +1474,11 @@ impl Render for RemoteView {
                 .on_mouse_down(
                     b,
                     cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                        // No picture yet (connecting, or turned away): nothing to click, and the
+                        // token field on top keeps the focus a click just gave it.
+                        if this.session.viewer.status() != Status::Live {
+                            return;
+                        }
                         if !this.focus.is_focused(window) {
                             window.focus(&this.focus, cx);
                             this.sync_capture(window, cx);
@@ -1650,7 +1665,7 @@ impl Render for RemoteView {
                                 .text_center()
                                 .text_xs()
                                 .text_color(gpui_kit::white().opacity(0.7))
-                                .child(format!("Paste its access token: on {}, Glass › Settings › Access token (or run: glass token). This computer remembers it.", self.session.target.name)),
+                                .child(format!("Paste its access token: on {0}, Glass › Settings › Access token (or run: glass token). This computer remembers it. To use your passkey instead next time, update Glass on {0} and press Let your passkey open this computer on its Home page.", self.session.target.name)),
                         )
                         .child(
                             h_flex()
