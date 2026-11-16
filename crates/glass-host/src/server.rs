@@ -833,7 +833,7 @@ async fn control(
         return Ok(());
     }
     let hello_ok = matches!(hello, Ok(Some(ClientMsg::Hello { .. })));
-    let (token, link, pass, hello_device, codecs, ua, hello_cursor, hello_acks, hello_ask) = match hello {
+    let (token, link, pass, hello_device, codecs, ua, hello_cursor, hello_acks, hello_ask, hello_grant) = match hello {
         Ok(Some(ClientMsg::Hello {
             token,
             link,
@@ -844,8 +844,9 @@ async fn control(
             cursor,
             acks,
             ask,
-        })) => (token, link, pass, device, codecs, ua, cursor, acks, ask),
-        _ => (None, None, None, None, Vec::new(), None, false, false, false),
+            grant,
+        })) => (token, link, pass, device, codecs, ua, cursor, acks, ask, grant),
+        _ => (None, None, None, None, Vec::new(), None, false, false, false, None),
     };
     let mut device = crate::viewers::clean_device(hello_device.as_deref());
     let remote = ctx.relayed.is_some();
@@ -963,6 +964,41 @@ async fn control(
     // a yes gives it a pass, like opening a link would. (Not at the sign-in screen, where
     // nobody is; not over WebRTC, where the address is public; not when guests are off.)
     let mut asked_nearby = false;
+    // A device with nothing to show but a secret, on a computer that pinned its owner's
+    // passkey (`glass account add`): the viewer sends the owner to glassdesk.dev/computers,
+    // the passkey signs a yes naming that secret's hash, and this computer checks it itself
+    // (`actions`). A yes gives the device a pass, like opening a link would.
+    if auth.is_none()
+        && token.is_none()
+        && link.is_none()
+        && pass.is_none()
+        && !crate::signin::active()
+        && !tailnet_pending
+        && let Some(secret) = hello_grant.as_deref()
+        && crate::actions::opens()
+        && let Ok(key) = crate::remote::HostKey::load_or_create()
+    {
+        control::write_json(&mut send, &ServerMsg::AccountPasskey { host: key.id() }).await?;
+        let granted = if crate::actions::wait_grant(secret).await {
+            crate::access::grant_pass(&access_file, crate::access::MAX_GRANT, crate::access::Scope::default(), &device)
+                .map_err(|e| warn!("{peer}: couldn't make a pass: {e:#}"))
+                .ok()
+        } else {
+            None
+        };
+        let Some(g) = granted else {
+            record_auth_failure(shared, peer);
+            refused(&device, "no passkey confirmation");
+            let msg = "Nobody confirmed with the passkey in time.".into();
+            control::write_json(&mut send, &ServerMsg::Denied { msg, ended: false }).await?;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            ctx.conn.close(1u32.into(), b"not allowed");
+            return Ok(());
+        };
+        info!("{peer}: let in by the owner's passkey");
+        asked_nearby = true;
+        auth = Some(Auth::Guest { pass: g.pass, expires: g.expires, new: true, scope: g.scope, passkey: None });
+    }
     if auth.is_none()
         && hello_ask
         && token.is_none()

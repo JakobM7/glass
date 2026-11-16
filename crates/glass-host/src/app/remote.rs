@@ -374,6 +374,9 @@ impl RemoteView {
         for msg in self.session.viewer.take_inbox() {
             self.on_message(msg, window, cx);
         }
+        if let Some(url) = self.session.viewer.passkey_url.lock().unwrap().take() {
+            super::actions::open(&url);
+        }
         if self.over_picture {
             self.cursors.apply(self.session.viewer.cursor());
         }

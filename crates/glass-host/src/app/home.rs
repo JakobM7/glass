@@ -329,14 +329,24 @@ impl GlassApp {
                 cx,
             ),
         }];
-        // Not while it's known to be on the account already.
+        // Not while it's known to be on the account already, with your passkey pinned here.
+        let pins = !s.account_open_off && snap.policy.allows("links");
         if on_account != Some(true) {
             computers.push(ui::icon_row(
                 I::Plus,
                 theme.primary,
                 "Add this computer to your account",
-                ui::managed(if snap.remote { "So your other devices can open it from anywhere." } else { "So your other devices can open it from anywhere (turns on Reach from anywhere)." }, remote_locked),
+                ui::managed(if snap.remote { "Your passkey then opens it from your other devices, anywhere." } else { "Your passkey then opens it from anywhere (turns on Reach from anywhere)." }, remote_locked),
                 Button::new("account-add").small().label("Add this computer").disabled(remote_locked).on_click(|_, window, cx| act(window, cx, actions::account_add)),
+                cx,
+            ));
+        } else if snap.openers == 0 && pins {
+            computers.push(ui::icon_row(
+                I::KeyRound,
+                theme.primary,
+                "Let your passkey open this computer",
+                "Then the Glass app on your other computers needs no access token for it.",
+                Button::new("account-pin").small().label("Set up").disabled(remote_locked).on_click(|_, window, cx| act(window, cx, actions::account_add)),
                 cx,
             ));
         }

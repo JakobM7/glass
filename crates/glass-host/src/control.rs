@@ -54,6 +54,10 @@ pub enum ClientMsg {
         /// from the same network. See `crate::nearby`.
         #[serde(default)]
         ask: bool,
+        /// Nothing to show, but a secret the owner's passkey may say yes to (through
+        /// glassdesk.dev/computers): see `crate::actions`.
+        #[serde(default)]
+        grant: Option<String>,
     },
     /// The viewer now draws the pointer itself, or (trackpad mode, which has its own) wants
     /// it back in the video.
@@ -209,6 +213,9 @@ pub enum ServerMsg {
     },
     /// Waiting for the person at the computer to allow this connection.
     Waiting { msg: String },
+    /// Waiting for the owner's passkey: the viewer opens glassdesk.dev/computers, which asks
+    /// for it and tells this computer (`host`, its id there).
+    AccountPasskey { host: String },
     /// Not let in; the client stops retrying until the user asks again. `ended`: its pass
     /// went with the answer, so asking again can't work.
     Denied {
