@@ -84,7 +84,18 @@ impl GlassApp {
                 cx,
             ));
         }
-        let nearby_rows = self.nearby_rows(&nearby, cx);
+        let mut nearby_rows = self.nearby_rows(&nearby, cx);
+        // Always there, so an empty network says why rather than showing nothing.
+        if nearby_rows.is_empty() {
+            nearby_rows.push(ui::note(
+                if cfg!(any(target_os = "macos", windows)) {
+                    "No other computers running Glass found on this network. They show up here by themselves once they run Glass 0.15.2 or newer on the same Wi-Fi or wired network; a VPN on either computer can hide them."
+                } else {
+                    "Computers on this network are listed in the Glass app on a Mac or Windows PC, or with: glass nearby"
+                },
+                cx,
+            ));
+        }
         let account_rows = match &account {
             Some(list) => {
                 let mut rows = self.account_rows(list, cx);
@@ -120,7 +131,7 @@ impl GlassApp {
         };
 
         ui::page("Machines", "Your computers on Tailscale, on this network and on your account. Connect to one right here, open it in the browser, or wake one that's asleep.", cx)
-            .when(!nearby_rows.is_empty(), |d| d.child(ui::section("On this network", nearby_rows, cx)))
+            .child(ui::section("On this network", nearby_rows, cx))
             .child(ui::section("On your account", account_rows, cx))
             .child(ui::section("On your tailnet", rows, cx))
             .children(self.link_section(cx))
