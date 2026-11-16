@@ -150,12 +150,14 @@ pub const TAILSCALE_START: &str = "Tailscale is installed but its service isn't 
 pub const TAILSCALE_SIGN_IN: &str =
     "Tailscale isn't signed in. Click its tray icon and log in, or run: tailscale up";
 
+/// Opens a URL, settings page or folder with its default handler. Through the shell
+/// directly rather than `cmd /C start`, where a '&' in the URL would start a command.
 pub fn open_url(url: &str) {
-    // `start` treats its first quoted argument as a title, hence the empty one.
-    let mut cmd = std::process::Command::new("cmd");
-    cmd.args(["/C", "start", "", url]);
-    super::no_window(&mut cmd);
-    let _ = cmd.status();
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{HSTRING, w};
+    // SAFETY: valid, NUL-terminated wide strings that outlive the call.
+    unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(url), None, None, SW_SHOWNORMAL) };
 }
 
 /// Where to allow screen capture, for messages.
