@@ -129,6 +129,7 @@ impl GlassApp {
             self.toggle("ask-guests", "Ask before guests connect", "Someone with a link waits until you allow them.", s.ask_guests, cx),
             self.toggle("ask-everyone", "Ask before anyone connects", "Your own devices too.", s.ask_everyone, cx),
             self.toggle("tailnet-members", "Let everyone on this tailnet in", "Without the token, as guests. Otherwise only your own devices, and the people your access rules name.", s.tailnet_members, cx),
+            self.toggle("account-open", "Your passkey opens this computer", "Once this computer is on your glassdesk.dev account. Off: the Glass app elsewhere asks for the access token.", !s.account_open_off, cx),
             self.toggle("nearby", "Found on this network", "Glass on other computers here lists this one. Connecting still waits until someone here allows it.", !s.nearby_off, cx),
             ui::row(
                 "Reach from anywhere",
@@ -288,7 +289,11 @@ impl GlassApp {
             ),
             ui::row(
                 "Your account",
-                "glassdesk.dev lists your computers, to open from any device. You sign in there with a passkey; getting in still takes this computer's own sign-in.",
+                if snap.openers > 0 && !s.account_open_off {
+                    "glassdesk.dev lists your computers. Your passkey is pinned here: it opens this computer from the Glass app on your other devices."
+                } else {
+                    "glassdesk.dev lists your computers, to open from any device. Add this computer and your passkey can open it without the access token."
+                },
                 h_flex()
                     .gap_2()
                     .child(if signed_in {

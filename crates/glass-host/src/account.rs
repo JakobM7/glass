@@ -42,8 +42,17 @@ pub fn add() -> Result<Claim> {
         "/api/claims",
         json!({ "key": key.public(), "code": code, "ts": ts, "name": name, "sig": sig }),
     )?;
+    let mut url = v["url"].as_str().context("no link in the answer")?.to_string();
+    // The same link pins the account's passkeys here, so they can open this computer. That
+    // part comes after the `#`, which browsers don't send: glassdesk.dev never sees it.
+    if !crate::settings::load().account_open_off
+        && crate::policy::load().allows("links")
+        && let Ok(open) = crate::actions::start_open_enrollment()
+    {
+        url.push_str(&format!("&open={open}"));
+    }
     Ok(Claim {
-        url: v["url"].as_str().context("no link in the answer")?.to_string(),
+        url,
         expires: v["expires"].as_u64().unwrap_or_default(),
         name,
     })
@@ -53,6 +62,7 @@ pub fn add() -> Result<Claim> {
 /// if the website can't be reached: it no longer takes commands from what it left.
 pub fn remove() -> Result<u64> {
     crate::actions::forget_managers()?;
+    crate::actions::forget_openers()?;
     let key = HostKey::load_or_create()?;
     let ts = now();
     let sig = key.sign(format!("glass-unclaim-v1\n{ts}").as_bytes())?;

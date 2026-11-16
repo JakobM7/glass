@@ -85,6 +85,123 @@ pub fn forget_managers() -> Result<usize> {
     Ok(n)
 }
 
+// ---- Passkeys that open this computer ----
+//
+// Apart from actions: a passkey pinned when this computer joined your account
+// (`glass account add`) may let a device of yours in, the way a link would. The device makes a
+// secret and shows the passkey's page its hash; the passkey signs an `open` command naming
+// that hash; the device then presents the secret when it connects. glassdesk.dev relays the
+// signed command and never sees the secret, so it can't let anyone in.
+
+const OPENERS_MAX: usize = 20;
+/// How long a device has to connect once the passkey has said yes, and how long a
+/// connection waits for that yes.
+pub const GRANT_WAIT: Duration = Duration::from_secs(180);
+/// Connections waiting for a passkey at once (each holds a session open).
+const WAITERS_MAX: usize = 8;
+
+fn openers() -> Vec<Manager> {
+    std::fs::read(dir().join("openers.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// How many passkeys may open this computer.
+pub fn openers_count() -> usize {
+    openers().len()
+}
+
+/// Whether a passkey can let a device in: some are pinned and the owner hasn't turned it off.
+pub fn opens() -> bool {
+    !crate::settings::load().account_open_off && crate::policy::load().allows("links") && !openers().is_empty()
+}
+
+pub fn forget_openers() -> Result<usize> {
+    let n = openers().len();
+    let _ = std::fs::remove_file(dir().join("openers.json"));
+    let _ = std::fs::remove_file(dir().join("enroll-open.json"));
+    Ok(n)
+}
+
+/// A link's fragment (`<this computer>.<code>`) for the page that pins the account's passkeys
+/// to open this computer. The code never goes to glassdesk.dev. Good for 15 minutes.
+pub fn start_open_enrollment() -> Result<String> {
+    let mut raw = [0u8; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut raw).map_err(|_| anyhow::anyhow!("random"))?;
+    let pin = b64url(&raw);
+    crate::fleet::ensure_dir()?;
+    crate::fleet::write_private(&dir().join("enroll-open.json"), &serde_json::to_vec(&Enrollment { pin: pin.clone(), expires: now() + ENROLL_SECS })?)?;
+    Ok(format!("{}.{pin}", HostKey::load_or_create()?.id()))
+}
+
+fn open_vouch_message(host_id: &str, cred: &str, spki: &str) -> String {
+    format!("glass-open-v1\n{host_id}\n{cred}\n{spki}")
+}
+
+/// Pins a passkey to open this computer, if the open link's code vouches for it. `None`: it
+/// doesn't (no such link, or the vouch is for actions).
+fn enroll_opener(cred: &str, spki_b64: &str, mac: &[u8]) -> Option<Result<String>> {
+    let e: Enrollment = serde_json::from_slice(&std::fs::read(dir().join("enroll-open.json")).ok()?).ok()?;
+    if e.expires <= now() {
+        return None;
+    }
+    let host_id = HostKey::load_or_create().ok()?.id();
+    let pin = b64url_decode(&e.pin)?;
+    hmac::verify(&hmac::Key::new(hmac::HMAC_SHA256, &pin), open_vouch_message(&host_id, cred, spki_b64).as_bytes(), mac).ok()?;
+    Some((|| {
+        let point = point_from_spki(&b64url_decode(spki_b64).context("bad key")?)?;
+        let mut list = openers();
+        ensure!(list.len() < OPENERS_MAX || list.iter().any(|m| m.cred == cred), "as many passkeys as it can hold: glass account remove first");
+        list.retain(|m| m.cred != cred);
+        list.push(Manager { cred: cred.into(), key: b64url(&point), added: now() });
+        crate::fleet::ensure_dir()?;
+        let path = dir().join("openers.json");
+        let tmp = path.with_extension("tmp");
+        crate::fleet::write_private(&tmp, &serde_json::to_vec_pretty(&list)?)?;
+        std::fs::rename(tmp, path)?;
+        audit("enroll", "open", cred, true, "passkey pinned to open this computer");
+        Ok("This passkey can now open this computer.".into())
+    })())
+}
+
+/// What passkeys have said yes to (a hash of each device's secret, and until when), and
+/// how many connections are waiting for one.
+static GRANTS: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+static WAITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn grant_hash(secret: &str) -> String {
+    b64url(digest::digest(&digest::SHA256, format!("glass-open-grant-v1\n{secret}").as_bytes()).as_ref())
+}
+
+fn take_grant(secret: &str) -> bool {
+    let hash = grant_hash(secret);
+    let mut grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
+    grants.retain(|(_, exp)| *exp > now());
+    let n = grants.len();
+    grants.retain(|(h, _)| *h != hash);
+    grants.len() < n
+}
+
+/// Waits for a passkey to say yes to the device holding `secret`: true once it has (the yes
+/// is used up). False when nobody did in time, or too many are waiting already.
+pub async fn wait_grant(secret: &str) -> bool {
+    use std::sync::atomic::Ordering;
+    if !(16..=128).contains(&secret.len()) || WAITERS.fetch_add(1, Ordering::SeqCst) >= WAITERS_MAX {
+        WAITERS.fetch_sub(1, Ordering::SeqCst);
+        return false;
+    }
+    let deadline = tokio::time::Instant::now() + GRANT_WAIT;
+    let got = loop {
+        if take_grant(secret) {
+            break true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    WAITERS.fetch_sub(1, Ordering::SeqCst);
+    got
+}
+
 // ---- Pinning a passkey ----
 
 #[derive(Serialize, Deserialize)]
@@ -117,6 +234,15 @@ fn point_from_spki(spki: &[u8]) -> Result<[u8; 65]> {
 
 /// A passkey asks to be pinned (relayed by glassdesk.dev, vouched for with the link's code).
 pub fn enroll(cred: &str, spki_b64: &str, mac_b64: &str) -> Result<String> {
+    // Vouched for by the link `glass account add` made: it opens this computer, nothing more.
+    if let Some(mac) = b64url_decode(mac_b64)
+        && !cred.is_empty()
+        && cred.len() <= 1024
+        && b64url_decode(cred).is_some()
+        && let Some(r) = enroll_opener(cred, spki_b64, &mac)
+    {
+        return r;
+    }
     let path = dir().join("enroll.json");
     let e: Enrollment = serde_json::from_slice(&std::fs::read(&path).context("no enrollment is open: run glass fleet manage")?)?;
     ensure!(e.expires > now(), "that link has expired: run glass fleet manage again");
@@ -267,10 +393,26 @@ pub fn command(cmd: &str, a: &Assertion) -> (bool, String, Option<Deferred>) {
 
 fn check_and_run(cmd: &str, a: &Assertion) -> Result<(String, Option<Deferred>)> {
     ensure!(cmd.len() <= 1024, "command too long");
-    let list = managers();
-    ensure!(!list.is_empty(), "this computer isn't set up for actions: run glass fleet manage on it");
     let c: Command = serde_json::from_str(cmd).context("not a command")?;
     ensure!(c.v == 1, "unknown command version");
+    // Letting a device in: its own passkeys, and nothing runs.
+    if c.action == "open" {
+        ensure!(!crate::settings::load().account_open_off && crate::policy::load().allows("links"), "this computer doesn't let your passkey open it (glass config account-open on)");
+        let list = openers();
+        ensure!(!list.is_empty(), "this computer hasn't pinned your passkey. On it, press Add this computer in Glass (or run glass account add) and open the link");
+        ensure!(c.host == HostKey::load_or_create()?.id(), "meant for another computer");
+        ensure!(c.exp > now() && c.exp <= now() + COMMAND_SECS, "that command has expired");
+        ensure!((40..=64).contains(&c.arg.len()) && b64url_decode(&c.arg).is_some(), "bad request");
+        verify_assertion(cmd, a, &list, &rp_id(), &origin())?;
+        first_use(&c.nonce, c.exp)?;
+        let mut grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
+        grants.retain(|(_, exp)| *exp > now());
+        ensure!(grants.len() < 64, "too many at once; try again in a few minutes");
+        grants.push((c.arg.clone(), now() + GRANT_WAIT.as_secs()));
+        return Ok(("Let in. Go back to the Glass app.".into(), None));
+    }
+    let list = managers();
+    ensure!(!list.is_empty(), "this computer isn't set up for actions: run glass fleet manage on it");
     ensure!(c.host == HostKey::load_or_create()?.id(), "meant for another computer");
     ensure!(c.exp > now() && c.exp <= now() + COMMAND_SECS, "that command has expired");
     verify_assertion(cmd, a, &list, &rp_id(), &origin())?;
@@ -541,6 +683,18 @@ mod tests {
         fn ok(&self, cmd: &str) -> Assertion {
             self.sign(cmd, RP, ORIGIN, 0x05, "webauthn.get")
         }
+    }
+
+    #[test]
+    fn a_passkeys_yes_lets_in_the_device_with_the_secret_once() {
+        let secret = "s".repeat(43);
+        GRANTS.lock().unwrap().push((grant_hash(&secret), now() + 60));
+        assert!(!take_grant(&"t".repeat(43)), "another device's secret");
+        assert!(take_grant(&secret));
+        assert!(!take_grant(&secret), "used up");
+        // One that ran out is no yes.
+        GRANTS.lock().unwrap().push((grant_hash(&secret), now() - 1));
+        assert!(!take_grant(&secret));
     }
 
     #[test]

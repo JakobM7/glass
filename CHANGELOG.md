@@ -4,6 +4,13 @@ What changed in each release of Glass. `glass update` (or the Glass app) install
 
 ## Unreleased
 
+### Your passkey opens your computers
+
+- **The Glass app no longer asks for a computer's access token when your passkey is pinned there.** Adding a computer to your glassdesk.dev account (Add this computer in Glass, or `glass account add`) now also pins the account's passkeys on that computer. Connect to it from the Glass app on another computer and your browser opens for a passkey confirmation (your fingerprint, face or PIN); the screen then opens, and that app keeps a pass for 30 days.
+- The computer checks the passkey's signature itself, against what it pinned from a link made on the computer: glassdesk.dev passes the signed yes along and can't make one. A device let in this way is a guest, as with a link (screen, keyboard, files, clipboard); the access token still gives full access.
+- A computer added before this release pins nothing until you press Add this computer on it again (Home shows "Let your passkey open this computer"). Until then, and for computers on older versions, the app asks for the access token as before.
+- `glass config account-open off` (or Settings → Your passkey opens this computer) turns it off; `glass account remove` forgets the pinned passkeys.
+
 ## 0.15.2
 
 November 16, 2026

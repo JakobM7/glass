@@ -313,7 +313,9 @@ async fn once(target: &Target, viewer: &Arc<Viewer>, rx: &mut mpsc::UnboundedRec
     // `cursor`: this Mac's own pointer is the pointer (no delay, none drawn into the video).
     let hello = json!({ "t": "hello", "token": token, "device": device, "codecs": codecs(), "cursor": cfg!(target_os = "macos"), "acks": true, "ua": if cfg!(windows) { "Glass app (Windows)" } else { "Glass app (macOS)" }, "link": link, "pass": pass,
         // Nothing to show: on the same network, the person at that computer can let this one in.
-        "ask": token.is_none() && link.is_none() && pass.is_none() && target.remote.is_none() });
+        "ask": token.is_none() && link.is_none() && pass.is_none() && target.remote.is_none(),
+        // From anywhere, with nothing to show: the owner's passkey can say yes to this secret.
+        "grant": (token.is_none() && link.is_none() && pass.is_none() && target.remote.is_some()).then(|| viewer.grant.clone()) });
     write_json(&mut send, &hello).await?;
     step("hello sent");
     let mut control = read_control(recv);
@@ -416,8 +418,25 @@ async fn once(target: &Target, viewer: &Arc<Viewer>, rx: &mut mpsc::UnboundedRec
                     }
                     "codec" => viewer.live.lock().unwrap().codec = msg["codec"].as_str().unwrap_or_default().to_string(),
                     "bitrate" => viewer.live.lock().unwrap().target_mbps = msg["bps"].as_f64().unwrap_or(0.0) / 1e6,
+                    "accountPasskey" => {
+                        // The computer pinned its owner's passkey: the account's page asks for it.
+                        if let (Some((base, _)), Some(host)) = (&target.remote, msg["host"].as_str()) {
+                            let url = format!("{}/computers#grant={host}.{}", base.trim_end_matches('/'), crate::actions::grant_hash(&viewer.grant));
+                            step(&format!("passkey: {url}"));
+                            if !viewer.passkey_asked.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                                *viewer.passkey_url.lock().unwrap() = Some(url);
+                            }
+                            viewer.set_status(Status::Connecting("Confirm with your passkey in your browser to open this computer…".into()));
+                        }
+                    }
                     "waiting" => viewer.set_status(Status::Connecting(msg["msg"].as_str().unwrap_or("Waiting for someone at the computer to let you in…").into())),
-                    "denied" => return Ok(End::Refused(msg["msg"].as_str().unwrap_or("Not let in.").into())),
+                    "denied" => {
+                        // No passkey came: the computer's access token still gets in.
+                        if viewer.passkey_asked.load(std::sync::atomic::Ordering::Relaxed) {
+                            viewer.needs_token.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        return Ok(End::Refused(msg["msg"].as_str().unwrap_or("Not let in.").into()));
+                    }
                     "error" if msg["msg"] == "unauthorized" => {
                         // A pass or token that stopped working (revoked, expired, reset) isn't offered again.
                         super::prefs::update(&target.dns, |m| (m.pass, m.token) = (None, None));

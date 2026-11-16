@@ -180,6 +180,11 @@ pub struct Viewer {
     pass: Mutex<Option<String>>,
     /// The computer turned this one away for lack of a credential: its access token would do.
     pub needs_token: AtomicBool,
+    /// This session's secret for the owner's passkey to say yes to (see `crate::actions`).
+    grant: String,
+    /// The page where the passkey says yes, for the window to open (once).
+    pub passkey_url: Mutex<Option<String>>,
+    passkey_asked: AtomicBool,
     changed: Notify,
     /// A change is waiting to be drawn (so a burst of frames wakes the window once).
     dirty: AtomicBool,
@@ -206,6 +211,13 @@ impl Viewer {
             viewport: Mutex::new(None),
             pass: Mutex::new(None),
             needs_token: AtomicBool::new(false),
+            grant: {
+                let mut raw = [0u8; 32];
+                let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut raw);
+                crate::remote::b64url(&raw)
+            },
+            passkey_url: Mutex::new(None),
+            passkey_asked: AtomicBool::new(false),
             changed: Notify::new(),
             dirty: AtomicBool::new(false),
             last_tick: Mutex::new(None),

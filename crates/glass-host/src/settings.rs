@@ -19,6 +19,9 @@ pub struct Settings {
     /// Don't announce this computer on the local network, or let devices there ask to
     /// connect (`nearby`, on unless this is set).
     pub nearby_off: bool,
+    /// Don't let a passkey of the owner's glassdesk.dev account open this computer
+    /// (`account-open`, on unless this is set).
+    pub account_open_off: bool,
     /// Record every session to a video file in `recordings_dir`.
     pub record: bool,
     /// Where recordings go (default ~/Movies/Glass or ~/Videos/Glass).
@@ -200,6 +203,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("ask-everyone", "on/off: ask before anyone connects"),
     ("tailnet-members", "on/off: anyone on this tailnet connects without the token, as a guest"),
     ("nearby", "on/off: computers on the same network find this one, and can ask to connect"),
+    ("account-open", "on/off: your glassdesk.dev account's passkey can open this computer (once it's pinned here by glass account add)"),
     ("record", "on/off: record every session"),
     ("recordings-dir", "folder for recordings"),
     ("privacy", "on/off: blank this screen and block local input while viewed"),
@@ -293,6 +297,7 @@ impl Settings {
             "ask-everyone" => show_bool(self.ask_everyone),
             "tailnet-members" => show_bool(self.tailnet_members),
             "nearby" => show_bool(!self.nearby_off),
+            "account-open" => show_bool(!self.account_open_off),
             "record" => show_bool(self.record),
             "recordings-dir" => recordings_dir(self).display().to_string(),
             "privacy" => show_bool(self.privacy),
@@ -353,6 +358,7 @@ impl Settings {
             "ask-everyone" => self.ask_everyone = on_off(value)?,
             "tailnet-members" => self.tailnet_members = on_off(value)?,
             "nearby" => self.nearby_off = !on_off(value)?,
+            "account-open" => self.account_open_off = !on_off(value)?,
             "record" => self.record = on_off(value)?,
             "recordings-dir" => {
                 self.recordings_dir = (!value.is_empty()).then(|| PathBuf::from(value))
