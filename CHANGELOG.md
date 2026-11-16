@@ -4,6 +4,18 @@ What changed in each release of Glass. `glass update` (or the Glass app) install
 
 ## Unreleased
 
+## 0.15.1
+
+November 16, 2026
+
+Security fixes. Update if you run Glass on Windows.
+
+- **Windows:** a viewer waiting to be let in could run commands on the host with a crafted device name. When Glass asks the person at the computer first (`glass config ask-guests on`, `ask-everyone on`, or a link made with `--ask`), the name went into the prompt's PowerShell with a curly quote PowerShell reads as the end of the string. Every string Glass hands PowerShell now has all its quote characters escaped.
+- **Windows:** a guest sending files could save them outside Downloads, on another drive, with a name like `D:/folder/file`. A `:` in a sent name now becomes `_`.
+- Device names shown in prompts and the viewer list lose invisible characters (text-direction overrides, zero-width spaces) that could make one device look like another.
+- The browser log the page sends (`POST /log`, which needs no sign-in) is capped per request and starts over past 8 MB, so it can't fill the disk.
+- **Windows:** links Glass opens (the tray's Open logs, setup's Tailscale pages) go straight to the shell instead of through `cmd /C start`.
+
 ## 0.15.0
 
 November 11, 2026
