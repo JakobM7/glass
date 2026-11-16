@@ -2742,10 +2742,21 @@ static CLIENT_LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 const LOG_LINES_MAX: usize = 200;
 const LOG_LINE_MAX: usize = 4096;
 
+/// The client log starts over (keeping one old file) past this, since `POST /log` needs no
+/// sign-in and anyone who can reach the page could otherwise fill the disk.
+const CLIENT_LOG_MAX: u64 = 8 << 20;
+
 async fn append_client_log(path: PathBuf, body: String) {
     use std::io::Write;
     let now = unix_now();
-    let lines: String = body.lines().map(|l| format!("{now} {l}\n")).collect();
+    let lines: String = body
+        .lines()
+        .take(LOG_LINES_MAX)
+        .map(|l| format!("{now} {}\n", l.chars().take(LOG_LINE_MAX).collect::<String>()))
+        .collect();
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > CLIENT_LOG_MAX) {
+        let _ = std::fs::rename(&path, path.with_extension("old.log"));
+    }
     let result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -2754,8 +2765,8 @@ async fn append_client_log(path: PathBuf, body: String) {
     if let Err(e) = result {
         warn!("writing client log: {e}");
     }
-    for line in body.lines().filter(|l| l.contains("\"level\":\"error\"")) {
-        warn!(target: "client", "{line}");
+    for line in body.lines().take(LOG_LINES_MAX).filter(|l| l.contains("\"level\":\"error\"")) {
+        warn!(target: "client", "{}", line.chars().take(LOG_LINE_MAX).collect::<String>());
     }
 }
 

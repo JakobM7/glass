@@ -133,11 +133,17 @@ pub fn next_id() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Characters that change how a name reads without showing (direction overrides, zero-width
+/// joiners and spaces, BOM): a device could use them to dress itself up as another.
+fn is_invisible(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+}
+
 /// A short, safe label from what the browser says it is.
 pub fn clean_device(raw: Option<&str>) -> String {
     raw.map(|d| {
         d.chars()
-            .filter(|c| !c.is_control())
+            .filter(|c| !c.is_control() && !is_invisible(*c))
             .take(48)
             .collect::<String>()
     })
@@ -199,6 +205,7 @@ mod tests {
             "Chrome on Windows"
         );
         assert_eq!(clean_device(Some("x\u{7}y")), "xy");
+        assert_eq!(clean_device(Some("iPhone\u{202E}evil\u{200B}")), "iPhoneevil");
         assert_eq!(clean_device(None), "A browser");
         assert_eq!(clean_device(Some(&"a".repeat(100))).len(), 48);
     }
