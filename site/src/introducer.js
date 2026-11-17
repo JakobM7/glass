@@ -8,6 +8,9 @@ import { DurableObject } from 'cloudflare:workers';
 
 const MAX_CLIENTS = 32;
 const MAX_OFFERS_PER_SOCKET = 5;
+// A browser's offer lists its ICE candidates on every m-line (data + 4 video), and Cloudflare
+// TURN alone gives a dozen each: 20 KB was outgrown. A Durable Object message can be 1 MiB.
+const MAX_SDP = 128 * 1024;
 // How long a command waits for its computer (a script may take a minute).
 const RELAY_WAIT_MS = 70_000;
 const RELAY_IN_FLIGHT = 4;
@@ -154,7 +157,11 @@ export class Introducer extends DurableObject {
   }
 
   async fromClient(ws, meta, msg) {
-    if (msg.t !== 'offer' || typeof msg.sdp !== 'string' || msg.sdp.length > 20_000) return;
+    if (msg.t !== 'offer' || typeof msg.sdp !== 'string') return;
+    if (msg.sdp.length > MAX_SDP) {
+      ws.send(JSON.stringify({ t: 'error', msg: 'This browser offered a connection too large to pass on.' }));
+      return;
+    }
     if (meta.offers >= MAX_OFFERS_PER_SOCKET) {
       ws.close(4029, 'too many offers');
       return;

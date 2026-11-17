@@ -235,7 +235,7 @@ export function serveRtc({ port, hostKey, signalUrl, log, onVideo = () => {}, on
       await pc.setLocalDescription(await pc.createOffer());
       await gathered(pc);
       const tGathered = performance.now();
-      const offer = pc.localDescription.sdp;
+      const offer = bundledCandidates(pc.localDescription.sdp);
       ws.send(JSON.stringify({ t: 'offer', sdp: offer }));
       const reply = await next(15_000);
       const tAnswered = performance.now();
@@ -308,6 +308,27 @@ export async function verifyAnswer(hostKey, offerSdp, answerSdp, sig) {
   } catch {
     return false;
   }
+}
+
+/**
+ * The offer with its ICE candidates on the bundle's first m-line only. Every m-line is in one BUNDLE
+ * group (one transport), yet Chrome lists the same candidates on each: with TURN, five times
+ * over 20 KB. The host gathers them from every m-line, so once is enough.
+ */
+export function bundledCandidates(sdp) {
+  const lines = sdp.split('\r\n');
+  const group = lines.find((l) => l.startsWith('a=group:BUNDLE '))?.slice('a=group:BUNDLE '.length).split(' ') ?? [];
+  const sections = [];
+  for (const l of lines) {
+    if (l.startsWith('m=') || !sections.length) sections.push([]);
+    sections.at(-1).push(l);
+  }
+  const mid = (sec) => sec.find((l) => l.startsWith('a=mid:'))?.slice(6);
+  // Not every m-line bundled (or none): leave the offer as it is.
+  const media = sections.slice(1);
+  if (!media.length || !media.every((sec) => group.includes(mid(sec)))) return sdp;
+  const isCandidate = (l) => l.startsWith('a=candidate:') || l === 'a=end-of-candidates';
+  return [sections[0], ...media.map((sec) => (mid(sec) === group[0] ? sec : sec.filter((l) => !isCandidate(l))))].flat().join('\r\n');
 }
 
 function gathered(pc) {
