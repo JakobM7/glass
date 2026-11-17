@@ -15,6 +15,7 @@ type Next = (req: Request) => Promise<Response>;
 const ASSET = /\.(?:js|mjs|css|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|map|mp4|webm|mp3|wav)$/i;
 const BEACON_PATH = "/_al/s.js";
 const EVENT_PATH = "/_al/e";
+const TOKEN_PATH = "/_al/t";
 
 /** Wrap any fetch handler: classify, pass through, inject beacon, record off the hot path. */
 export async function observe(req: Request, env: AgentLensEnv, ctx: ExecutionContext, next: Next, opts: ObserveOptions = {}): Promise<Response> {
@@ -23,6 +24,7 @@ export async function observe(req: Request, env: AgentLensEnv, ctx: ExecutionCon
   const url = new URL(req.url);
   if (url.pathname === BEACON_PATH) return beaconScript();
   if (url.pathname === EVENT_PATH) return handleBeacon(req, env, ctx, opts);
+  if (url.pathname === TOKEN_PATH) return freshToken(req, env.AL_SECRET, url.hostname);
 
   const started = Date.now();
   let verdict: Verdict | null = null;
@@ -68,6 +70,23 @@ function beaconScript(): Response {
       "content-type": "text/javascript; charset=utf-8",
       "cache-control": "public, max-age=3600, stale-while-revalidate=86400",
     },
+  });
+}
+
+/**
+ * A new page token for a page whose own has aged out: a shell cached by a service worker, or a tab open for days.
+ * Classified like the page request would be, so it carries the same edge verdict.
+ */
+async function freshToken(req: Request, secret: string, hostname: string): Promise<Response> {
+  if (req.method !== "GET") return new Response(null, { status: 405 });
+  const v = classifyRequest({
+    ua: req.headers.get("user-agent") ?? "",
+    headers: req.headers,
+    asn: req.cf?.asn as number | undefined,
+    cfBot: req.cf?.botManagement as { score?: number; verifiedBot?: boolean } | undefined,
+  });
+  return new Response(await signToken(secret, projectOf(hostname), v.cls), {
+    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
   });
 }
 
