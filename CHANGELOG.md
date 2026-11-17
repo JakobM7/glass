@@ -4,6 +4,8 @@ What changed in each release of Glass. `glass update` (or the Glass app) install
 
 ## Unreleased
 
+- **Links from anywhere open in the browser again.** A browser's connection offer had outgrown what glassdesk.dev would pass on, so it was dropped and the page said the computer didn't answer. glassdesk.dev now takes much larger offers (and says so if one is still too big), and the browser sends about 40% less, listing its network routes once instead of once per screen.
+
 ## 0.15.3
 
 November 16, 2026
