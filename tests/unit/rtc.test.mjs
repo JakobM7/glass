@@ -2,7 +2,7 @@
 // host key in the link, over exactly the offer it sent.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fromB64url, hostIdFor, toB64url, verifyAnswer } from '../../web/rtc.js';
+import { bundledCandidates, fromB64url, hostIdFor, toB64url, verifyAnswer } from '../../web/rtc.js';
 
 async function hostKey() {
   const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
@@ -34,4 +34,22 @@ test('accepts a genuine answer and rejects tampering or another key', async () =
   assert.equal(await verifyAnswer(host.key, 'other-offer', 'answer-sdp', sig), false, 'replayed for another offer');
   assert.equal(await verifyAnswer(other.key, 'offer-sdp', 'answer-sdp', sig), false, 'signed by a different key');
   assert.equal(await verifyAnswer(host.key, 'offer-sdp', 'answer-sdp', 'garbage'), false);
+});
+
+test('an offer lists its candidates once, on the bundle\'s first m-line', () => {
+  const cand = (n) => `a=candidate:${n} 1 udp 2122260223 192.168.1.${n} 5000${n} typ host`;
+  const m = (mid, kind) => [`m=${kind} 9 UDP/DTLS/SCTP webrtc-datachannel`, `a=mid:${mid}`, cand(1), cand(2), 'a=end-of-candidates'];
+  const offer = (group) => ['v=0', 's=-', `a=group:BUNDLE ${group}`, ...m('0', 'application'), ...m('1', 'video'), ...m('2', 'video'), ''].join('\r\n');
+  const out = bundledCandidates(offer('0 1 2'));
+  const sections = out.split('\r\nm=');
+  assert.equal(sections[1].match(/a=candidate:/g).length, 2);
+  assert.match(sections[1], /a=end-of-candidates/);
+  for (const s of sections.slice(2)) assert.doesNotMatch(s, /a=candidate:|a=end-of-candidates/);
+  assert.ok(out.endsWith('\r\n'), 'keeps the final line break');
+  // The bundle's first mid, wherever that m-line is.
+  const tagged = bundledCandidates(offer('2 0 1')).split('\r\nm=');
+  assert.equal(tagged[3].match(/a=candidate:/g).length, 2);
+  assert.doesNotMatch(tagged[1], /a=candidate:/);
+  // An m-line outside the bundle has its own transport: left alone.
+  assert.equal(bundledCandidates(offer('0 1')), offer('0 1'));
 });
