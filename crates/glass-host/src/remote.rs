@@ -164,7 +164,18 @@ pub struct HostKey {
 impl HostKey {
     /// Loads this host's key, creating it on first use (mode 0600).
     pub fn load_or_create() -> Result<Self> {
-        let path = dir().join("host-key.pk8");
+        Self::load_or_create_at("host-key.pk8")
+    }
+
+    /// The key this computer proves itself with to a viewer that reaches it directly, on a
+    /// local network or over a VPN. Its own key: the host key's public half is what a link
+    /// from anywhere carries, and isn't for a whole network to read.
+    pub fn direct() -> Result<Self> {
+        Self::load_or_create_at("direct-key.pk8")
+    }
+
+    fn load_or_create_at(file: &str) -> Result<Self> {
+        let path = dir().join(file);
         let rng = SystemRandom::new();
         let pkcs8 = match std::fs::read(&path) {
             Ok(b) => b,
@@ -204,6 +215,19 @@ impl HostKey {
 pub fn id_for(public_key: &[u8]) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, public_key);
     b64url(&digest.as_ref()[..16])
+}
+
+/// What a host signs to vouch for its self-signed certificate (by its SHA-256): a viewer
+/// that saved this computer's direct key then knows the address still leads to it.
+pub fn direct_payload(cert_hash: &[u8]) -> Vec<u8> {
+    let hex: String = cert_hash.iter().map(|b| format!("{b:02x}")).collect();
+    format!("glass-direct-v1\n{hex}").into_bytes()
+}
+
+/// Whether `sig` is `key`'s signature over `msg` (both base64url, as [`HostKey`] gives them).
+pub fn verify(key: &str, msg: &[u8], sig: &str) -> bool {
+    let (Some(key), Some(sig)) = (b64url_decode(key), b64url_decode(sig)) else { return false };
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, &key).verify(msg, &sig).is_ok()
 }
 
 /// What the host signs for an answer: both SDPs, so neither side can be swapped.
