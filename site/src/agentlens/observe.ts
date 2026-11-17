@@ -7,6 +7,8 @@ import { BEACON_JS } from "./beacon.ts";
 import { handleBeacon } from "./beacon-handler.ts";
 import { verifyIdentity } from "./identity.ts";
 import { geoOf, logErr, projectOf, write, type AgentLensEnv, type ObserveOptions } from "./shared.ts";
+import { assign } from "./variants.ts";
+import { applyVariant, testsFor } from "./edge.ts";
 
 export type { AgentLensEnv, ObserveOptions };
 
@@ -53,11 +55,29 @@ export async function observe(req: Request, env: AgentLensEnv, ctx: ExecutionCon
   try {
     const token = await signToken(env.AL_SECRET, projectOf(url.hostname), verdict.cls);
     // Inline: no extra request (free-tier friendly, no render-blocking fetch) and nothing for ad-block lists to match.
-    const tag = `<script data-t="${token}">${BEACON_JS}</script>`;
     // Body now differs per response: drop the origin ETag so browsers don't revalidate into an expired token.
     const out = new Response(res.body, res);
     out.headers.delete("etag");
-    return new HTMLRewriter().on("head", { element: (el) => { el.append(tag, { html: true }); } }).transform(out);
+    const rw = new HTMLRewriter();
+    // Edge tests: people take part in running tests; everyone, crawlers included, gets a promoted winner.
+    let exposure = "";
+    const host = projectOf(url.hostname);
+    const tests = testsFor(env, host, ctx);
+    if (tests.length) {
+      const person = verdict.cls === "human" || verdict.cls === "agentic_browser";
+      const visitor = person ? await visitorId(env.AL_SECRET, host, req.headers.get("cf-connecting-ip") ?? "", req.headers.get("user-agent") ?? "") : "";
+      const a = assign(tests, url.pathname, visitor, person);
+      if (a) {
+        applyVariant(rw, a.variant);
+        if (a.exposed) {
+          exposure = ` data-x="${a.test}:${a.variant.id}"`;
+          // This copy is one visitor's: a shared cache must not hand it to the next.
+          out.headers.set("cache-control", "private, no-store");
+        }
+      }
+    }
+    const tag = `<script data-t="${token}"${exposure}>${BEACON_JS}</script>`;
+    return rw.on("head", { element: (el) => { el.append(tag, { html: true }); } }).transform(out);
   } catch (err) {
     console.error(JSON.stringify({ msg: "inject_failed", err: String(err) }));
     return res;

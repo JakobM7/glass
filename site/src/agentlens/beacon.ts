@@ -10,6 +10,7 @@
  *
  *   agentlens.track("signup", { plan: "pro" }, 49)
  *   agentlens.experiment("pricing_v2", "b")   → $exposure, once per page
+ *   <script data-x="test:variant">            → the same, for a variant the edge already applied (edge tests)
  *   <button data-al-event="cta_click">  → auto-tracked
  */
 export const BEACON_JS = `(()=>{var s=document.currentScript,t=s&&s.dataset.t;if(!t||window.agentlens)return;
@@ -68,4 +69,4 @@ addEventListener("popstate",nav);
 addEventListener("visibilitychange",function(){if(document.visibilityState==="hidden")engage()});
 addEventListener("pagehide",engage);
 var Q=w.agentlens_q||[];w.agentlens={track:track,experiment:experiment};Q.forEach(function(a){a[0]==="experiment"?experiment(a[1],a[2]):track.apply(null,a)});
-send("pv")})();`;
+send("pv");(s.dataset.x||"").split(",").forEach(function(p){var a=p.split(":");if(a[1])experiment(a[0],a[1])})})();`;
