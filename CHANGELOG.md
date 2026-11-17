@@ -4,6 +4,20 @@ What changed in each release of Glass. `glass update` (or the Glass app) install
 
 ## Unreleased
 
+### Over a VPN into your network
+
+- **A VPN into your network now works like being on it: no Tailscale needed.** With any VPN that routes to the network, the Glass app opens your computers at the addresses they have there.
+- **The Glass app remembers the computers you open.** Machines → Opened before lists each one and whether it answers from where you are now. Over a VPN nothing announces itself, so this is where your home computers are when you're away: one click, with the pass they already gave this device. Forget removes one.
+- **Open any computer by its address.** The field under Machines takes `192.168.1.20` (or a name, with a port if it isn't 8080) as well as a link. The address is on that computer's Home, under This network or VPN.
+- **An address is only where to look.** A remembered computer has to prove it's the same one before the app shows it a pass or a token: its own key signs the certificate the connection is pinned to, or its certificate is for its name. On someone else's network, whatever has that address gets nothing.
+- **A new address doesn't lose a computer.** When the router gives a remembered computer another address, the app looks it up by the name it has on that network's DNS (the one it was typed by, or the one it says it has) and connects there once it proves it's the same computer. A name like `studio.attlocal.net` works in the address field too.
+- **A device you let in stays in while it's used.** The pass from "Let in" (or from your passkey) now runs 30 days from each visit instead of from the first, so a computer you open regularly doesn't ask again while you're away and nobody is there to say yes. Unused for 30 days, or revoked under Links, it ends as before. Passes from links, single sign-on and LDAP still end when they were set to.
+- A device on a VPN may ask to be let in, like one on the same subnet: the person at the computer (or a phone with notifications on) sees that it's from another private network and allows it. Public addresses still can't ask. `glass config nearby off` stops it.
+- Home shows this computer's own network address when it has no Tailscale name, instead of `http://localhost`, and setup no longer reads as if Tailscale were required.
+- Browsers still need HTTPS, which an address on a private network doesn't have: for an iPad over a VPN, use a link from anywhere (it connects directly through the VPN) or Tailscale.
+
+### Fixes
+
 - **Links from anywhere open in the browser again.** A browser's connection offer had outgrown what glassdesk.dev would pass on, so it was dropped and the page said the computer didn't answer. glassdesk.dev now takes much larger offers (and says so if one is still too big), and the browser sends about 40% less, listing its network routes once instead of once per screen.
 
 ## 0.15.3
