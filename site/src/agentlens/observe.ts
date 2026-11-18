@@ -8,7 +8,9 @@ import { handleBeacon } from "./beacon-handler.ts";
 import { verifyIdentity } from "./identity.ts";
 import { geoOf, logErr, projectOf, write, type AgentLensEnv, type ObserveOptions } from "./shared.ts";
 import { assign } from "./variants.ts";
-import { applyVariant, testsFor } from "./edge.ts";
+import { pickSurvey } from "./surveys.ts";
+import { applyVariant, configFor } from "./edge.ts";
+import { surveyTag } from "./survey.ts";
 
 export type { AgentLensEnv, ObserveOptions };
 
@@ -60,12 +62,18 @@ export async function observe(req: Request, env: AgentLensEnv, ctx: ExecutionCon
     out.headers.delete("etag");
     const rw = new HTMLRewriter();
     // Edge tests: people take part in running tests; everyone, crawlers included, gets a promoted winner.
-    let exposure = "";
+    let exposure = "", ask = "";
     const host = projectOf(url.hostname);
-    const tests = testsFor(env, host, ctx);
-    if (tests.length) {
+    const { tests, surveys } = configFor(env, host, ctx);
+    if (tests.length || surveys.length) {
       const person = verdict.cls === "human" || verdict.cls === "agentic_browser";
       const visitor = person ? await visitorId(env.AL_SECRET, host, req.headers.get("cf-connecting-ip") ?? "", req.headers.get("user-agent") ?? "") : "";
+      // Surveys: only people are asked, and only the share the survey names.
+      const survey = person ? pickSurvey(surveys, url.pathname, visitor) : null;
+      if (survey) {
+        ask = surveyTag(survey);
+        out.headers.set("cache-control", "private, no-store");
+      }
       const a = assign(tests, url.pathname, visitor, person);
       if (a) {
         applyVariant(rw, a.variant);
@@ -76,7 +84,7 @@ export async function observe(req: Request, env: AgentLensEnv, ctx: ExecutionCon
         }
       }
     }
-    const tag = `<script data-t="${token}"${exposure}>${BEACON_JS}</script>`;
+    const tag = `<script data-t="${token}"${exposure}>${BEACON_JS}</script>${ask}`;
     return rw.on("head", { element: (el) => { el.append(tag, { html: true }); } }).transform(out);
   } catch (err) {
     console.error(JSON.stringify({ msg: "inject_failed", err: String(err) }));
