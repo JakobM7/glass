@@ -963,7 +963,7 @@ async fn bridge(
     // them too, so its own flow control knows what's on screen. Once they come, the host
     // sets this viewer's bitrate from them (end to end, through this bridge), and the link
     // meter steps aside.
-    let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<(u8, u32)>();
+    let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<(u8, u32, u64)>();
     let mut acking = false;
     let mut bridge_drops = 0u64;
     // Video over the data channel: measure the link and cap the bitrate to it (RTP video
@@ -1002,7 +1002,7 @@ async fn bridge(
                             while let Some(event) = channel.poll().await {
                                 match event {
                                     DataChannelEvent::OnMessage(m) => {
-                                        if let Some(ack) = glass_proto::read_frame_ack(&m.data[..]) {
+                                        if let Some(ack) = glass_proto::read_frame_ack_waited(&m.data[..]) {
                                             let _ = ack_tx.send(ack);
                                         }
                                         let _ = conn.send_datagram(&m.data[..]);
@@ -1095,14 +1095,14 @@ async fn bridge(
                     pipe_stream_to_channel(recv, channel).await;
                 });
             }
-            Some((stream, id)) = ack_rx.recv() => {
+            Some((stream, id, waited_us)) = ack_rx.recv() => {
                 if !acking {
                     acking = true;
                     crate::server::set_remote_cap(bridge_id, None);
                     debug!("remote peer ({peer}): frames acknowledged; the host paces video by them");
                 }
                 let now = std::time::Instant::now();
-                link.acked(stream, id, now);
+                link.acked_waited(stream, id, std::time::Duration::from_micros(waited_us), now);
                 flow.update(&mut link, now);
             }
             _ = flow_poll.tick(), if link.busy() => {

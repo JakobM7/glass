@@ -652,12 +652,12 @@ async fn session(incoming: IncomingSession, shared: Arc<Shared>) -> Result<()> {
                         }
                         Some(&KIND_MIC) if mic_on.load(Ordering::Relaxed) => crate::mic::packet(&dgram),
                         Some(&glass_proto::KIND_FRAME_ACK) if authed.load(Ordering::Relaxed) => {
-                            if let Some((stream, id)) = glass_proto::read_frame_ack(&dgram) {
+                            if let Some((stream, id, waited_us)) = glass_proto::read_frame_ack_waited(&dgram) {
                                 if !acking.swap(true, Ordering::Relaxed) {
                                     info!("{peer}: frames acknowledged: pacing video by them");
                                 }
                                 let now = std::time::Instant::now();
-                                link.acked(stream, id, now);
+                                link.acked_waited(stream, id, std::time::Duration::from_micros(waited_us), now);
                                 flow.update(&mut link, now);
                             }
                         }

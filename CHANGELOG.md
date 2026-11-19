@@ -16,6 +16,19 @@ What changed in each release of Glass. `glass update` (or the Glass app) install
 - Home shows this computer's own network address when it has no Tailscale name, instead of `http://localhost`, and setup no longer reads as if Tailscale were required.
 - Browsers still need HTTPS, which an address on a private network doesn't have: for an iPad over a VPN, use a link from anywhere (it connects directly through the VPN) or Tailscale.
 
+### Smoother on fast screens
+
+- **120 fps on a light screen too.** Typing or moving a window never raised the bitrate past where it started (4 Mbps), and 120 fps needs 10, so a 120 Hz viewer got 60 however good the link. While frames come back with no queue the bitrate now rises gently to 12 Mbps, and no further on that alone.
+- **The fastest screen watching sets the frame rate.** A 60 Hz viewer joining no longer drops a 120 Hz one to 60; its own link still sets its own bitrate.
+- **The Glass app asks for 120 fps on a fast screen** (a ProMotion MacBook, a 120 or 144 Hz monitor), as the browser does. It used to always get 60.
+- **Linux at 120 fps with the GPU** (`GLASS_ENCODER=gpu`, VA-API or NVENC). OpenH264 stays at 60, and the encoder no longer works on frames a monitor faster than the frame rate repaints.
+- Sharp text on a fast link runs at 60 fps instead of 30.
+- How many frames may be on their way follows the frame rate: at 120 fps it counted half the time it should, and held capture back on any link with a real round trip. A held capture also looks again every 2 ms instead of 8, and on a Mac a frame a little too early goes when it's due instead of up to 83 ms later.
+- Frame acknowledgements say how long the viewer took to decode and draw, so a slow decoder isn't taken for a slow network and the bitrate isn't cut for it.
+- **No stall every 7.5 seconds at 120 fps.** The keyframe H.264 needs before its frame counter wraps came every 900 frames: every 15 s at 60 fps, every 7.5 s at 120, each one a pause of its size on a slower link (about 140 ms on 10 Mbps). It now goes the next time the screen is still (and nothing is on its way to a viewer), where nobody sees it: on a Mac, and with the GPU encoders on Linux and Windows. OpenH264, whose counter runs much longer, makes one every 15 s at any frame rate.
+- **Windows reads back only what changed.** Each frame copied the whole screen from the GPU (8 MB at 1080p); it now copies just the regions Windows says changed, and converts to NV12 in one pass.
+- `bench/run.mjs --fps 120` measures 120 fps (headless Chrome animates at 60, so the viewer never asked for more).
+
 ### Fixes
 
 - **Links from anywhere open in the browser again.** A browser's connection offer had outgrown what glassdesk.dev would pass on, so it was dropped and the page said the computer didn't answer. glassdesk.dev now takes much larger offers (and says so if one is still too big), and the browser sends about 40% less, listing its network routes once instead of once per screen.

@@ -598,6 +598,11 @@ async fn once(target: &Target, viewer: &Arc<Viewer>, rx: &mut mpsc::UnboundedRec
                             if !viewer.video_on.load(Ordering::Relaxed) {
                                 write_json(&mut send, &json!({ "t": "video", "on": false })).await?;
                             }
+                            // On a fast screen (a ProMotion MacBook, a 144 Hz monitor), more
+                            // frames, as the browser viewer asks; otherwise the host sends 60.
+                            if let Some(hz) = screen_hz().filter(|&hz| hz > 68.0) {
+                                write_json(&mut send, &json!({ "t": "refresh", "hz": hz })).await?;
+                            }
                             if viewer.audio_on.load(Ordering::Relaxed) && msg["audio"].as_bool().unwrap_or(false) {
                                 write_json(&mut send, &json!({ "t": "audio", "on": true })).await?;
                             }
@@ -1435,5 +1440,61 @@ mod tests {
         // A link, or a tailnet name, comes back untouched (and nothing is looked up).
         let link = Target::from_url("https://studio.tail1234.ts.net/#l=code").unwrap();
         assert_eq!(link.clone().settle().unwrap().dns, link.dns);
+    }
+}
+
+/// The fastest active screen's refresh rate, if it can be told. On a Mac the display link's:
+/// a ProMotion panel's display mode says 0 Hz, its link 120.
+#[cfg(target_os = "macos")]
+fn screen_hz() -> Option<f64> {
+    use objc2_core_video::CVDisplayLink;
+    let mut ids = [0u32; 16];
+    let mut count = 0u32;
+    let ok = unsafe { objc2_core_graphics::CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+    if ok != objc2_core_graphics::CGError::Success {
+        return None;
+    }
+    ids[..count as usize]
+        .iter()
+        .filter_map(|&id| {
+            let mut link: *mut CVDisplayLink = std::ptr::null_mut();
+            #[allow(deprecated)]
+            let made = unsafe { CVDisplayLink::create_with_cg_display(id, std::ptr::NonNull::from(&mut link)) };
+            let link = std::ptr::NonNull::new(link)?;
+            // Created here: released when this drops.
+            let link = unsafe { objc2_core_foundation::CFRetained::from_raw(link) };
+            if made != objc2_core_video::kCVReturnSuccess {
+                return None;
+            }
+            #[allow(deprecated)]
+            let period = link.nominal_output_video_refresh_period();
+            (period.timeValue > 0 && period.timeScale > 0).then(|| period.timeScale as f64 / period.timeValue as f64)
+        })
+        .reduce(f64::max)
+}
+
+/// The primary screen's refresh rate (Windows reports whole hertz).
+#[cfg(windows)]
+fn screen_hz() -> Option<f64> {
+    use windows::Win32::Graphics::Gdi::{DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW};
+    let mut mode = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+    let ok = unsafe { EnumDisplaySettingsW(windows::core::PCWSTR::null(), ENUM_CURRENT_SETTINGS, &mut mode) };
+    (ok.as_bool() && mode.dmDisplayFrequency > 1).then_some(mode.dmDisplayFrequency as f64)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn screen_hz() -> Option<f64> {
+    None
+}
+
+#[cfg(all(test, any(target_os = "macos", windows)))]
+mod screen_hz_tests {
+    #[test]
+    fn a_screen_refreshes_at_a_plausible_rate() {
+        // No screen at all (a CI runner) says nothing; one that's there says something sane.
+        if let Some(hz) = super::screen_hz() {
+            eprintln!("screen refresh: {hz:.1} Hz");
+            assert!((20.0..=500.0).contains(&hz), "{hz}");
+        }
     }
 }

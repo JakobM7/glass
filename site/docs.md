@@ -15,7 +15,7 @@ Glass streams a Mac's screen to a web browser and sends mouse, keyboard, and tou
 Features:
 
 - **Low latency.** About 15–30 ms capture-to-display on a home network or Tailscale, measured live in the stats overlay.
-- **120 fps and wide colour.** A viewer on a fast screen (120 Hz and up) gets up to 120 frames a second from a Mac whose display refreshes that fast; a wide-colour (Display P3) Mac display arrives in P3 instead of being clipped to sRGB.
+- **120 fps and wide colour.** A viewer on a fast screen (120 Hz and up) gets up to 120 frames a second from a Mac whose display refreshes that fast (or a Linux or Windows computer encoding on its GPU); a wide-colour (Display P3) Mac display arrives in P3 instead of being clipped to sRGB.
 - **Works in the browser.** Open a URL on the iPad; there's no app to install. Add it to the Home Screen for a true fullscreen app.
 - **Full control.** Mouse, trackpad, keyboard, and touch (tap to click, drag, long-press to right-click, two-finger scroll), plus an on-screen keyboard button.
 - **Fleet (new).** See every computer on your account in one list (model, system, disk, FileVault, firewall, battery), restart or update them from the page with a passkey confirmation, and mark the ones that break your rules. Off until you turn it on, computer by computer: [Glass Fleet](#glass-fleet-new).
@@ -366,7 +366,7 @@ More in the toolbar:
 - **Machines:** sleeping machines Glass has seen before can be woken with Wake-on-LAN (also `glass wake <name|mac>`).
 - **This device** (the bell): what this browser does for Glass.
   - **Notifications:** messages, questions (an agent asking before it acts or needing your help, someone asking to connect) and activity (someone joined, an update is ready), even with Glass closed. On iPhone and iPad, add Glass to the Home Screen first. `glass notifications` lists the devices that get them (`test`, `off <id>`), as does the Glass app's Settings.
-  - **Smooth motion:** on a screen faster than 60 Hz, up to 120 frames a second (on by default there; macOS hosts, when the Mac's display is that fast too). Every viewer shares the stream, so with a 60 Hz viewer connected everyone gets 60. The stats overlay shows the frame rate. Browsers that hold pages to 60 Hz (Safari, by default) stay at 60.
+  - **Smooth motion:** on a screen faster than 60 Hz, up to 120 frames a second (on by default there; on a Mac host when its display is that fast too, and on Linux and Windows hosts encoding on the GPU). Every viewer shares the stream, and the fastest screen watching sets its pace: a 60 Hz viewer joining doesn't slow the others down. The stats overlay shows the frame rate. Browsers that hold pages to 60 Hz (Safari, by default) stay at 60.
   - **Keep screen awake** while connected (on by default).
   - **Picture in picture:** the screen in a floating window while you do something else.
   - **Use all my screens:** with several monitors here and several displays there, one display on each (Chrome and Edge).
@@ -504,7 +504,7 @@ glass uninstall     Stop the background service and remove it from login items
 glass --version
 ```
 
-Host options: `--bind` (repeatable, or comma-separated) sets the address for the web ports and WebTransport together. The default is `0.0.0.0` (every IPv4 address; WebTransport also accepts IPv6, as before). `tailscale` listens on this machine's Tailscale addresses and fails if Tailscale isn't running. For example `--bind tailscale --bind 127.0.0.1`, or `--bind 127.0.0.1,100.64.0.2`. The same list is saved with `glass config bind` and applies the next time Glass starts; a `--bind` flag overrides it. On macOS, port 443 needs the default bind (or `0.0.0.0`): an unprivileged process can only bind a port below 1024 on the wildcard address, so a specific address falls back to the web port. `--http-port` (default 8080; if it's taken, the next free port up to 8099, on every chosen address), `--https-port` (default 443: also serve there when free, so URLs need no port; 0 turns it off), `--wt-port` (UDP, default 4433; likewise moves to the next free port, which browsers learn automatically), `--fps` (default 60), `--mbps` (default 30), `--scale`, `--cert`/`--key` (custom TLS), `--token-file`, `--web-dir`, `--log-dir`.
+Host options: `--bind` (repeatable, or comma-separated) sets the address for the web ports and WebTransport together. The default is `0.0.0.0` (every IPv4 address; WebTransport also accepts IPv6, as before). `tailscale` listens on this machine's Tailscale addresses and fails if Tailscale isn't running. For example `--bind tailscale --bind 127.0.0.1`, or `--bind 127.0.0.1,100.64.0.2`. The same list is saved with `glass config bind` and applies the next time Glass starts; a `--bind` flag overrides it. On macOS, port 443 needs the default bind (or `0.0.0.0`): an unprivileged process can only bind a port below 1024 on the wildcard address, so a specific address falls back to the web port. `--http-port` (default 8080; if it's taken, the next free port up to 8099, on every chosen address), `--https-port` (default 443: also serve there when free, so URLs need no port; 0 turns it off), `--wt-port` (UDP, default 4433; likewise moves to the next free port, which browsers learn automatically), `--fps` (the most frames a second, default 120; viewers on 60 Hz screens get 60), `--mbps` (default 30), `--scale`, `--cert`/`--key` (custom TLS), `--token-file`, `--web-dir`, `--log-dir`.
 
 Files:
 
@@ -537,7 +537,7 @@ Files:
 The same one-liner installs Glass on Linux x86_64 and ARM64 (aarch64). The Linux host uses:
 
 - **Screen capture:** xdg-desktop-portal ScreenCast over PipeWire. On Hyprland (Omarchy), the share picker asks once which screen to share; Glass saves a restore token so it doesn't ask again.
-- **Encoding:** software H.264 (OpenH264, screen-content mode). Screens larger than 2560×1600 are halved before encoding, to keep the frame rate up. Hardware VA-API encoding is planned.
+- **Encoding:** software H.264 (OpenH264, screen-content mode), up to 60 fps. Screens larger than 2560×1600 are halved before encoding, to keep the frame rate up. With `GLASS_ENCODER=gpu` (or `vaapi`, `nvenc`) it encodes on the GPU instead, up to 120 fps for viewers on fast screens.
 - **Input:** a virtual keyboard and absolute pointer through `/dev/uinput`. `glass setup` installs a one-line udev rule (`/etc/udev/rules.d/60-glass-uinput.rules`) giving the logged-in user access; this needs `sudo` once.
 - **Address:** Linux only lets root listen on port 443, so `glass setup` runs `tailscale serve` to forward `https://<machine>.<tailnet>.ts.net/` to Glass on localhost. If that isn't possible, use the `:8080` address. `--bind` / `glass config bind` chooses which addresses the ports use; include `127.0.0.1` when `tailscale serve` is what publishes port 443, because that forward targets localhost.
 - **Clipboard:** `wl-copy` / `wl-paste` (wl-clipboard).
