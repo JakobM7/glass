@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Glass
+Comment=Andere Computer steuern und diesen freigeben, in einem Fenster
+Exec="/home/jakobm/Projekte/Programming/RemoteDesktop/AgentGlass/Glass-Linux.sh"
+Path=/home/jakobm/Projekte/Programming/RemoteDesktop/AgentGlass
+Icon=/home/jakobm/Projekte/Programming/RemoteDesktop/AgentGlass/site/public/icon-512.png
+Terminal=false
+Actions=host;test;
+
+[Desktop Action host]
+Name=Nur freigeben (im Terminal)
+Exec="/home/jakobm/Projekte/Programming/RemoteDesktop/AgentGlass/glass-start.sh" host
+
+[Desktop Action test]
+Name=Host im Testmodus (Testbild)
+Exec="/home/jakobm/Projekte/Programming/RemoteDesktop/AgentGlass/glass-start.sh" test
